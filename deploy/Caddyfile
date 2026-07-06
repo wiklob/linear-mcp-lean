@@ -1,0 +1,9 @@
+# Caddy site for the linear-mcp wrapper. Replace the domain with yours.
+# Automatic HTTPS: Caddy provisions + renews a publicly-trusted Let's Encrypt cert
+# for this DOMAIN (a bare IP would only get Caddy's self-signed internal cert).
+# Requires: DNS A linear-mcp.example.com -> the box, and inbound :80/:443 open (ufw).
+linear-mcp.example.com {
+	# /health is ungated in the app; /mcp is bearer-gated in the app. Caddy just
+	# terminates TLS and forwards everything to the local Node process.
+	reverse_proxy 127.0.0.1:8080
+}

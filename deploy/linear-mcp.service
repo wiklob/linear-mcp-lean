@@ -1,0 +1,36 @@
+[Unit]
+Description=linear-mcp — self-hosted Linear MCP wrapper
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=linear-mcp
+WorkingDirectory=/opt/linear-mcp
+# Secrets (LINEAR_API_KEY + MCP_BEARER_TOKEN) come from this root-owned file (mode 600),
+# never the repo. PORT is non-secret config.
+Environment=PORT=8080
+# The per-call byte log. Default ./byte-log.jsonl is relative to the
+# read-only /opt (ProtectSystem=strict), so it must point at a writable path.
+# StateDirectory below provisions /var/lib/linear-mcp (owned by User=, writable
+# even under strict). instrument.ts reads BYTE_LOG_PATH for both append and the
+# /stats read, so this one var fixes both.
+Environment=BYTE_LOG_PATH=/var/lib/linear-mcp/byte-log.jsonl
+EnvironmentFile=/etc/linear-mcp.env
+ExecStart=/usr/bin/node /opt/linear-mcp/dist/index.js
+Restart=on-failure
+RestartSec=2
+
+# Hardening (systemd.exec). DynamicUser is intentionally NOT used — it would force a
+# world-readable EnvironmentFile, defeating the 600 secret file.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+# Writable state dir for the byte log. systemd creates /var/lib/linear-mcp
+# owned by User=linear-mcp and keeps it read-write even under ProtectSystem=strict,
+# which otherwise makes the whole tree (incl. WorkingDirectory=/opt) read-only.
+StateDirectory=linear-mcp
+
+[Install]
+WantedBy=multi-user.target

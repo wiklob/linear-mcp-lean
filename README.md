@@ -1,0 +1,156 @@
+# linear-mcp-router
+
+A self-hosted [MCP](https://modelcontextprotocol.io) server for [Linear](https://linear.app) that **controls the response shape**: field-selected, flattened reads and minimal write acks instead of the fat full-object payloads the hosted Linear MCP returns.
+
+Built for LLM agents (Claude Code, or any MCP client) that call Linear tools hundreds of times per session: every byte a tool returns is a token your model pays to read. This wrapper serves the same tool names as the hosted Linear MCP, so it's a drop-in replacement — but a default `list_issues` row is ~0.3× the hosted ~1.2 KB/issue, and a `save_issue` ack is ~160 bytes with no full-object echo.
+
+## How it works
+
+```
+MCP client ──POST /mcp (Bearer MCP_BEARER_TOKEN)──▶ this server
+                                                       │
+                          hand-written minimal GraphQL ├──▶ api.linear.app/graphql   (LINEAR_API_KEY)
+                          verbatim proxy (5 tools)     └──▶ mcp.linear.app/mcp       (LINEAR_API_KEY)
+```
+
+- **Trimmed GraphQL tools** — each read is a hand-written minimal GraphQL query flattened into a **closed** object (never a spread of the raw response, so no field sneaks in); each write returns a minimal ack (`save_issue` → `{id, identifier, state, url}`).
+- **Server-side name→id resolution** — filter and write args accept names (`state: "In Progress"`, `project: "My Project"`, `assignee: "me"`, team key/name case-insensitively); an unresolved name throws a **loud error**, never a silent empty result.
+- **Hosted-MCP proxy fallback** — 5 tools Linear's public GraphQL cannot back (`search_documentation`, `extract_images`, `get_diff`, `get_diff_threads`, `list_diffs`) are forwarded verbatim to the hosted Linear MCP.
+- **`linear_graphql` escape hatch** — run an arbitrary GraphQL document and get the raw, untrimmed result, for the rare need the lean defaults don't cover.
+- **Byte-savings observability** — every call appends one JSONL record (upstream bytes vs bytes returned); `GET /stats` aggregates per-tool trim ratios from real traffic.
+
+### Stack
+
+`@modelcontextprotocol/sdk` (`McpServer` + stateless `StreamableHTTPServerTransport`) behind Express `POST /mcp`; `graphql-request` for the hand-written queries; zero database.
+
+## Quick start
+
+Requires Node 20+.
+
+```bash
+npm install
+cp .env.example .env    # fill in MCP_BEARER_TOKEN + LINEAR_API_KEY
+npm run build
+npm start               # listens on :$PORT (default 8080), MCP at POST /mcp
+```
+
+- `MCP_BEARER_TOKEN` — inbound auth: the token your MCP clients must send. Generate one: `openssl rand -hex 32`.
+- `LINEAR_API_KEY` — outbound auth: a [Linear Personal API key](https://linear.app/settings/account/security) (Settings → Security & access → Personal API keys).
+
+Smoke test:
+
+```bash
+source .env
+curl -s http://localhost:8080/health     # {"ok":true} — liveness, no Linear call
+curl -s -H "Authorization: Bearer $MCP_BEARER_TOKEN" \
+  http://localhost:8080/ready            # proves the LINEAR_API_KEY actually reaches Linear
+curl -s -X POST http://localhost:8080/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H "Authorization: Bearer $MCP_BEARER_TOKEN" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_issue","arguments":{"id":"ENG-123"}}}'
+```
+
+## Connect an MCP client
+
+Register under the server name `linear` so tool names (`mcp__linear__*` in Claude Code) match the hosted Linear MCP exactly — existing prompts and call sites keep working unchanged.
+
+**Claude Code** (CLI):
+
+```bash
+claude mcp add --transport http linear https://linear-mcp.example.com/mcp \
+  --header "Authorization: Bearer ${MCP_BEARER_TOKEN}"
+```
+
+or in `.mcp.json` / `~/.claude.json` `mcpServers`:
+
+```json
+{
+  "mcpServers": {
+    "linear": {
+      "type": "http",
+      "url": "https://linear-mcp.example.com/mcp",
+      "headers": { "Authorization": "Bearer ${MCP_BEARER_TOKEN}" }
+    }
+  }
+}
+```
+
+(`${MCP_BEARER_TOKEN}` is expanded from the client's environment at session start.)
+
+For local experimentation, point at `http://localhost:8080/mcp` instead.
+
+## Tools
+
+Same names and semantics as the hosted Linear MCP (36 tools total):
+
+| Group | Tools |
+|-------|-------|
+| Issues | `get_issue`, `list_issues`, `save_issue`, `list_comments`, `save_comment` |
+| Projects | `get_project`, `list_projects`, `save_project`, `list_milestones`, `get_milestone`, `save_milestone` |
+| Teams & users | `get_team`, `list_teams`, `get_user`, `list_users` |
+| Labels & states | `list_issue_labels`, `list_project_labels`, `create_issue_label`, `list_issue_statuses`, `get_issue_status`, `list_cycles` |
+| Documents | `get_document`, `list_documents`, `save_document` |
+| Attachments | `get_attachment`, `create_attachment`, `prepare_attachment_upload`, `create_attachment_from_upload` |
+| Status updates | `get_status_updates`, `save_status_update` |
+| Proxied to hosted MCP | `search_documentation`, `extract_images`, `get_diff`, `get_diff_threads`, `list_diffs` |
+| Escape hatch | `linear_graphql` |
+
+## Field contract — lean default, broaden on demand
+
+Reads are **lean by default, broaden on demand**. The full per-tool field map lives in [`FIELDS.md`](./FIELDS.md); the contract in brief:
+
+- **`full: true`** (opt-in on `get_issue`, `list_issues`, `list_projects`, `get_project`) → a documented richer superset (assignee, lifecycle timestamps, state type, parent, estimate, due date, …). Absent → the minimal contract. You only pay the extra bytes when you ask.
+
+- **`list_issues` returns a pagination envelope** matching the hosted MCP shape:
+  ```json
+  { "issues": [ … ], "hasNextPage": true, "cursor": "<opaque token>" }
+  ```
+  To page: pass the returned `cursor` back as the `cursor` arg until `hasNextPage` is false. `list_issues` is the only paginated tool (see `FIELDS.md` for why the other lists stay bare arrays).
+
+- **`linear_graphql({query, variables})`** — arbitrary GraphQL against `https://api.linear.app/graphql` via the same server-side client, raw untrimmed result. Bearer-gated like every tool; errors surface, never swallowed.
+  ```jsonc
+  // request
+  { "name": "linear_graphql", "arguments": {
+      "query": "query($id:String!){ issue(id:$id){ identifier subscribers{ nodes{ name } } } }",
+      "variables": { "id": "ENG-123" } } }
+  ```
+
+## Endpoints
+
+| Endpoint | Auth | Purpose |
+|----------|------|---------|
+| `POST /mcp` | Bearer | The MCP endpoint (stateless Streamable HTTP) |
+| `GET /health` | none | Liveness — process up, deliberately no Linear call |
+| `GET /ready` | Bearer | Readiness — fresh `viewer` query proves the `LINEAR_API_KEY` authenticates (catches a placeholder/revoked key `/health` can't); 503 + surfaced error on failure |
+| `GET /stats` | Bearer | Per-tool + overall upstream/downstream byte totals and trim ratios, plus byte-log write-health |
+
+## Verification probes
+
+Encoded, runnable proofs (the repo has no test framework — probes are the tests):
+
+```bash
+npm run build
+npm run probe:auth       # missing/invalid bearer -> 401; valid -> non-401 (key-free)
+npm run probe:tools      # tools/list serves every promised tool name (key-free)
+npm run probe:bytelog    # dead byte-log sink is distinguishable from idle on /stats (key-free)
+npm run probe:secrets    # no secret tracked in the repo (offline)
+npm run probe:status     # no deprecated GraphQL field selected (needs LINEAR_API_KEY)
+npm run probe:proxy      # hosted MCP accepts the PAK bearer (needs LINEAR_API_KEY)
+npm run probe:vs-hosted  # byte-savings comparison vs the hosted MCP (needs a deploy; see file header)
+```
+
+## Deploy
+
+`deploy/` has a complete runbook (`deploy/README.md`) for a small Linux VPS: systemd unit (hardened: `ProtectSystem=strict`, dedicated no-login user, root-owned `chmod 600` env file) + Caddy for automatic HTTPS.
+
+## Security notes
+
+- **Single-tenant by design.** The server holds ONE Linear API key; every client presenting the bearer token acts as that Linear user, with that user's full workspace access. Don't share the bearer across trust boundaries — this is a personal/team-internal service, not a multi-tenant gateway.
+- The bearer gate runs before the MCP transport and compares tokens with a timing-safe equality; a missing `MCP_BEARER_TOKEN` fails closed (500), never open.
+- `/ready` and `/stats` are bearer-gated too — they expose the viewer id and traffic shape.
+- Secrets come only from the environment (`.env` locally, a root-owned env file under systemd). Only `.env.example` is committed; `npm run probe:secrets` asserts nothing secret is tracked.
+
+## License
+
+MIT — see [LICENSE](./LICENSE).
