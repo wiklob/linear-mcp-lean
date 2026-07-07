@@ -14,7 +14,7 @@ if (!process.env.LINEAR_API_KEY) {
   console.error(
     "linear-mcp-lean: LINEAR_API_KEY is not set.\n" +
       "Create a Personal API key in Linear (Settings → Security & access → Personal API keys)\n" +
-      'and pass it in your MCP client config, e.g. "env": { "LINEAR_API_KEY": "lin_api_..." }.',
+      'and pass it in your MCP client config, e.g. "env": { "LINEAR_API_KEY": "<your key>" }.',
   );
   process.exit(1);
 }

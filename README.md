@@ -57,7 +57,8 @@ Requires Node 20+ and a [Linear Personal API key](https://linear.app/settings/ac
 ### Local (stdio) — no server to run
 
 ```bash
-claude mcp add linear -e LINEAR_API_KEY=lin_api_... -- npx -y linear-mcp-lean
+# with LINEAR_API_KEY exported in your shell:
+claude mcp add linear -e LINEAR_API_KEY=${LINEAR_API_KEY} -- npx -y linear-mcp-lean
 ```
 
 or in `.mcp.json` / `~/.claude.json` `mcpServers` (any MCP client with stdio support):
@@ -68,13 +69,13 @@ or in `.mcp.json` / `~/.claude.json` `mcpServers` (any MCP client with stdio sup
     "linear": {
       "command": "npx",
       "args": ["-y", "linear-mcp-lean"],
-      "env": { "LINEAR_API_KEY": "lin_api_..." }
+      "env": { "LINEAR_API_KEY": "${LINEAR_API_KEY}" }
     }
   }
 }
 ```
 
-No bearer token here: a stdio server is a local child process of your MCP client, so the only credential is the outbound `LINEAR_API_KEY`. The byte log is off in stdio mode unless you set `BYTE_LOG_PATH` explicitly.
+(`${LINEAR_API_KEY}` is expanded from the client's environment at session start.) No bearer token here: a stdio server is a local child process of your MCP client, so the only credential is the outbound `LINEAR_API_KEY`. The byte log is off in stdio mode unless you set `BYTE_LOG_PATH` explicitly.
 
 ### Hosted (HTTP) — one deploy shared across machines and agents
 
