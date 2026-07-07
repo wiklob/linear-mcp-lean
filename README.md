@@ -1,6 +1,9 @@
 # linear-mcp-lean
 
-A self-hosted [MCP](https://modelcontextprotocol.io) server for [Linear](https://linear.app) that **controls the response shape**: field-selected, flattened reads and minimal write acks instead of the fat full-object payloads the hosted Linear MCP returns.
+[![CI](https://github.com/wiklob/linear-mcp-lean/actions/workflows/ci.yml/badge.svg)](https://github.com/wiklob/linear-mcp-lean/actions/workflows/ci.yml)
+[![savings re-measured weekly](https://github.com/wiklob/linear-mcp-lean/actions/workflows/probe-vs-hosted.yml/badge.svg)](https://github.com/wiklob/linear-mcp-lean/actions/workflows/probe-vs-hosted.yml)
+
+A self-hosted [MCP](https://modelcontextprotocol.io) server for [Linear](https://linear.app) that **controls the response shape**: field-selected, flattened reads and minimal write acks instead of the fat full-object payloads the hosted Linear MCP returns. Run it locally over stdio (`npx linear-mcp-lean`) or as a shared HTTP deploy.
 
 Built for LLM agents (Claude Code, or any MCP client) that call Linear tools hundreds of times per session: every byte a tool returns is a token your model pays to read. This wrapper serves the same tool names as the hosted Linear MCP, so it's a drop-in replacement — but a default `list_issues` row is ~0.3× the hosted ~1.2 KB/issue, and a `save_issue` ack is ~160 bytes with no full-object echo.
 
@@ -13,20 +16,29 @@ Built for LLM agents (Claude Code, or any MCP client) that call Linear tools hun
 - You don't have to take the savings on faith: every call is logged, and `GET /stats` shows the trim ratio **measured on your own traffic**.
 - It authenticates with a plain Linear API key — no OAuth dance — so it works headless: CI, cron, background agents, multiple machines sharing one deploy.
 
+## Measured savings vs the hosted MCP
+
+<!-- savings:begin -->
+_Not yet measured — the weekly [probe-vs-hosted workflow](.github/workflows/probe-vs-hosted.yml) fills this in automatically once the repo's deploy secrets are configured. To measure by hand against your own deploy: `npm run probe:vs-hosted` (env in the file header)._
+<!-- savings:end -->
+
 ## How it compares
 
 - **vs Linear's hosted MCP** ([mcp.linear.app](https://linear.app/docs/mcp)) — identical tool names, so it's a drop-in swap; but reads are field-trimmed to roughly a third of the size and writes return minimal acks instead of full-object echoes. Static API key instead of per-user OAuth, which is what makes headless use possible. The 5 tools Linear's public GraphQL can't back are proxied to the hosted server, so nothing is lost in the swap.
-- **vs community SDK wrappers** ([cline/linear-mcp](https://github.com/cline/linear-mcp), [tacticlaunch/mcp-linear](https://github.com/tacticlaunch/mcp-linear), [dvcrn/mcp-server-linear](https://github.com/dvcrn/mcp-server-linear), …) — those are stdio subprocesses exposing plain CRUD with untrimmed SDK payloads, one instance per machine. This is an HTTP server one deploy can share across machines and agents, and response size is the entire point of its design.
+- **vs community SDK wrappers** ([cline/linear-mcp](https://github.com/cline/linear-mcp), [tacticlaunch/mcp-linear](https://github.com/tacticlaunch/mcp-linear), [dvcrn/mcp-server-linear](https://github.com/dvcrn/mcp-server-linear), …) — those expose plain CRUD with untrimmed SDK payloads. This serves field-trimmed responses — response size is the entire point of its design — over the same convenient stdio transport (`npx linear-mcp-lean`), plus an HTTP mode one deploy can share across machines and agents.
 - **vs [linear-toon-mcp](https://github.com/hoblin/linear-toon-mcp)** — same motivation (the hosted MCP burns context), different mechanism: TOON re-encodes *all* the data in a more compact text format (~40–60% claimed). This server instead *selects fields server-side*, so unneeded data never crosses the wire at all, stays plain JSON (no extra format for the model to parse), keeps the hosted server's tool names for drop-in compatibility, and proves its savings from live traffic via `/stats`.
 
 ## How it works
 
 ```
-MCP client ──POST /mcp (Bearer MCP_BEARER_TOKEN)──▶ this server
-                                                       │
-                          hand-written minimal GraphQL ├──▶ api.linear.app/graphql   (LINEAR_API_KEY)
-                          verbatim proxy (5 tools)     └──▶ mcp.linear.app/mcp       (LINEAR_API_KEY)
+MCP client ──stdio (npx linear-mcp-lean)──────────────▶ this server
+        or ──POST /mcp (Bearer MCP_BEARER_TOKEN)──────▶     │
+                                                            │
+                               hand-written minimal GraphQL ├──▶ api.linear.app/graphql   (LINEAR_API_KEY)
+                               verbatim proxy (5 tools)     └──▶ mcp.linear.app/mcp       (LINEAR_API_KEY)
 ```
+
+- **Two transports, one tool set** — stdio (local child process of your MCP client, one command, no server to run) and stateless Streamable HTTP behind a bearer gate (one deploy shared across machines, plus the `/stats` byte-log). Both serve the same `buildServer()` registrations.
 
 - **Trimmed GraphQL tools** — each read is a hand-written minimal GraphQL query flattened into a **closed** object (never a spread of the raw response, so no field sneaks in); each write returns a minimal ack (`save_issue` → `{id, identifier, state, url}`).
 - **Server-side name→id resolution** — filter and write args accept names (`state: "In Progress"`, `project: "My Project"`, `assignee: "me"`, team key/name case-insensitively); an unresolved name throws a **loud error**, never a silent empty result.
@@ -40,7 +52,32 @@ MCP client ──POST /mcp (Bearer MCP_BEARER_TOKEN)──▶ this server
 
 ## Quick start
 
-Requires Node 20+.
+Requires Node 20+ and a [Linear Personal API key](https://linear.app/settings/account/security) (Settings → Security & access → Personal API keys).
+
+### Local (stdio) — no server to run
+
+```bash
+# with LINEAR_API_KEY exported in your shell:
+claude mcp add linear -e LINEAR_API_KEY=${LINEAR_API_KEY} -- npx -y linear-mcp-lean
+```
+
+or in `.mcp.json` / `~/.claude.json` `mcpServers` (any MCP client with stdio support):
+
+```json
+{
+  "mcpServers": {
+    "linear": {
+      "command": "npx",
+      "args": ["-y", "linear-mcp-lean"],
+      "env": { "LINEAR_API_KEY": "${LINEAR_API_KEY}" }
+    }
+  }
+}
+```
+
+(`${LINEAR_API_KEY}` is expanded from the client's environment at session start.) No bearer token here: a stdio server is a local child process of your MCP client, so the only credential is the outbound `LINEAR_API_KEY`. The byte log is off in stdio mode unless you set `BYTE_LOG_PATH` explicitly.
+
+### Hosted (HTTP) — one deploy shared across machines and agents
 
 ```bash
 npm install
@@ -50,7 +87,7 @@ npm start               # listens on :$PORT (default 8080), MCP at POST /mcp
 ```
 
 - `MCP_BEARER_TOKEN` — inbound auth: the token your MCP clients must send. Generate one: `openssl rand -hex 32`.
-- `LINEAR_API_KEY` — outbound auth: a [Linear Personal API key](https://linear.app/settings/account/security) (Settings → Security & access → Personal API keys).
+- `LINEAR_API_KEY` — outbound auth: the same Personal API key as above.
 
 Smoke test:
 
@@ -68,7 +105,7 @@ curl -s -X POST http://localhost:8080/mcp \
 
 ## Connect an MCP client
 
-Register under the server name `linear` so tool names (`mcp__linear__*` in Claude Code) match the hosted Linear MCP exactly — existing prompts and call sites keep working unchanged.
+Register under the server name `linear` so tool names (`mcp__linear__*` in Claude Code) match the hosted Linear MCP exactly — existing prompts and call sites keep working unchanged. For the stdio form see [Quick start](#local-stdio--no-server-to-run); connecting to a hosted deploy:
 
 **Claude Code** (CLI):
 
@@ -140,9 +177,15 @@ Reads are **lean by default, broaden on demand**. The full per-tool field map li
 | `GET /ready` | Bearer | Readiness — fresh `viewer` query proves the `LINEAR_API_KEY` authenticates (catches a placeholder/revoked key `/health` can't); 503 + surfaced error on failure |
 | `GET /stats` | Bearer | Per-tool + overall upstream/downstream byte totals and trim ratios, plus byte-log write-health |
 
-## Verification probes
+## Tests and verification probes
 
-Encoded, runnable proofs (the repo has no test framework — probes are the tests):
+Unit tests cover the flatteners and name→id resolvers with `fetch` mocked at the GraphQL seam — no Linear workspace, key, or network needed (they run on fork PRs):
+
+```bash
+npm test
+```
+
+Live invariants are covered by encoded, runnable probes:
 
 ```bash
 npm run build
@@ -154,6 +197,8 @@ npm run probe:status     # no deprecated GraphQL field selected (needs LINEAR_AP
 npm run probe:proxy      # hosted MCP accepts the PAK bearer (needs LINEAR_API_KEY)
 npm run probe:vs-hosted  # byte-savings comparison vs the hosted MCP (needs a deploy; see file header)
 ```
+
+[CI](.github/workflows/ci.yml) runs the type-check, build, unit tests, and the four key-free probes (`auth`, `tools`, `bytelog`, `secrets`) on every PR and push to main. The [probe-vs-hosted workflow](.github/workflows/probe-vs-hosted.yml) re-measures the savings table above weekly.
 
 ## Deploy
 

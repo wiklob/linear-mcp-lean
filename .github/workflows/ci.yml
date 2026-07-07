@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  type-check:
+    name: type-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npx tsc --noEmit
+
+  # Everything here is offline or dummy-key (see README "Verification probes"),
+  # so it runs identically on fork PRs — no repo secrets involved.
+  test:
+    name: test-and-probes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+      - run: npm run probe:auth
+      - run: npm run probe:tools
+      - run: npm run probe:bytelog
+      - run: npm run probe:secrets

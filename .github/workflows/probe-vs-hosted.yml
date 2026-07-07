@@ -1,0 +1,69 @@
+# Weekly re-measurement of the byte savings vs the hosted Linear MCP, committed
+# into README.md between the savings markers. "Verified savings, re-measured
+# weekly": doubles as regression detection (a trim regression shows up as a
+# drop in the table) and as the repo's marketing asset.
+#
+# Needs a live deploy + repo secrets (see probe-vs-hosted.mjs header):
+#   WRAPPER_URL, MCP_BEARER_TOKEN, LINEAR_API_KEY,
+#   PROBE_PROJECT_ID, PROBE_PROJECT, PROBE_ISSUE_ID, PROBE_TEAM
+# Without WRAPPER_URL the run skips the measurement instead of failing, so the
+# workflow is safe to keep enabled on forks/clones.
+name: probe-vs-hosted
+
+on:
+  schedule:
+    - cron: "17 5 * * 1" # Mondays 05:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Check deploy secrets
+        id: gate
+        env:
+          WRAPPER_URL: ${{ secrets.WRAPPER_URL }}
+        run: |
+          if [ -z "$WRAPPER_URL" ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "WRAPPER_URL secret not set — skipping measurement"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Measure vs hosted
+        if: steps.gate.outputs.present == 'true'
+        env:
+          WRAPPER_URL: ${{ secrets.WRAPPER_URL }}
+          MCP_BEARER_TOKEN: ${{ secrets.MCP_BEARER_TOKEN }}
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          PROBE_PROJECT_ID: ${{ secrets.PROBE_PROJECT_ID }}
+          PROBE_PROJECT: ${{ secrets.PROBE_PROJECT }}
+          PROBE_ISSUE_ID: ${{ secrets.PROBE_ISSUE_ID }}
+          PROBE_TEAM: ${{ secrets.PROBE_TEAM }}
+        run: node probe-vs-hosted.mjs | tee /tmp/savings.txt
+      - name: Splice the table into README
+        if: steps.gate.outputs.present == 'true'
+        run: node scripts/update-readme-savings.mjs /tmp/savings.txt
+      - name: Commit if changed
+        if: steps.gate.outputs.present == 'true'
+        run: |
+          if git diff --quiet README.md; then
+            echo "README unchanged — nothing to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git commit -m "README: refresh measured savings vs hosted MCP"
+          git push

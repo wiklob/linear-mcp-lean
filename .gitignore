@@ -2,5 +2,11 @@ node_modules/
 dist/
 .env
 .env.*
+.envrc
 !.env.example
 byte-log.jsonl
+
+# ticket-flow (local, per-worktree — never shared)
+.claude/active-project.json
+.claude/usage-stats/
+.claude/worktrees/

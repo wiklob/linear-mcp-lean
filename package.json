@@ -1,18 +1,40 @@
 {
   "name": "linear-mcp-lean",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "description": "Self-hosted MCP server wrapping Linear's GraphQL API with response-shape control — lean reads, minimal write acks, drop-in tool names.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wiklob/linear-mcp-lean.git"
+  },
+  "homepage": "https://github.com/wiklob/linear-mcp-lean#readme",
+  "bugs": "https://github.com/wiklob/linear-mcp-lean/issues",
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "linear",
+    "llm",
+    "agent"
+  ],
+  "bin": {
+    "linear-mcp-lean": "dist/stdio.js"
+  },
+  "files": [
+    "dist",
+    "FIELDS.md"
+  ],
   "engines": {
     "node": ">=20"
   },
   "scripts": {
     "build": "tsc",
     "postbuild": "node bin/gen-version.mjs",
+    "prepack": "npm run build",
     "start": "node dist/index.js",
     "dev": "tsc --watch",
+    "test": "vitest run",
     "probe:auth": "bash ./probe-auth.sh",
     "probe:tools": "bash ./probe-tools.sh",
     "probe:bytelog": "bash ./probe-bytelog-health.sh",
@@ -31,6 +53,7 @@
   "devDependencies": {
     "@types/express": "^4.17.21",
     "@types/node": "^22.0.0",
-    "typescript": "^5.6.0"
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0"
   }
 }
