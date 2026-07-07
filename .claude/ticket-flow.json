@@ -1,0 +1,9 @@
+{
+  "linearTeam": "linear-mcp-lean",
+  "scopeLabel": "lean",
+  "repo": "wiklob/linear-mcp-lean",
+  "baseBranch": "main",
+  "requiredCheck": "type-check",
+  "standaloneProject": "Standalone (linear-mcp-lean)",
+  "designDoctrine": []
+}
