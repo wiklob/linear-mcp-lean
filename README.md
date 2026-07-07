@@ -4,6 +4,21 @@ A self-hosted [MCP](https://modelcontextprotocol.io) server for [Linear](https:/
 
 Built for LLM agents (Claude Code, or any MCP client) that call Linear tools hundreds of times per session: every byte a tool returns is a token your model pays to read. This wrapper serves the same tool names as the hosted Linear MCP, so it's a drop-in replacement — but a default `list_issues` row is ~0.3× the hosted ~1.2 KB/issue, and a `save_issue` ack is ~160 bytes with no full-object echo.
 
+## In plain words
+
+- Your agent talks to Linear through this server instead of Linear's own MCP server. **Same tool names, same behavior — nothing in your prompts or workflows changes.**
+- The difference is what comes back: **only the fields agents actually use**, not the whole object. A typical issue row is ~340 bytes here vs ~1.2 KB from the hosted server; a write returns a tiny receipt (`{id, identifier, state, url}`) instead of echoing the full issue back.
+- Fewer bytes returned = fewer tokens your model reads = **cheaper, faster agent sessions** — the savings compound over hundreds of calls.
+- Need more sometimes? Pass `full: true` on that one call, or drop to raw GraphQL with `linear_graphql`. **Lean by default, never a dead end.**
+- You don't have to take the savings on faith: every call is logged, and `GET /stats` shows the trim ratio **measured on your own traffic**.
+- It authenticates with a plain Linear API key — no OAuth dance — so it works headless: CI, cron, background agents, multiple machines sharing one deploy.
+
+## How it compares
+
+- **vs Linear's hosted MCP** ([mcp.linear.app](https://linear.app/docs/mcp)) — identical tool names, so it's a drop-in swap; but reads are field-trimmed to roughly a third of the size and writes return minimal acks instead of full-object echoes. Static API key instead of per-user OAuth, which is what makes headless use possible. The 5 tools Linear's public GraphQL can't back are proxied to the hosted server, so nothing is lost in the swap.
+- **vs community SDK wrappers** ([cline/linear-mcp](https://github.com/cline/linear-mcp), [tacticlaunch/mcp-linear](https://github.com/tacticlaunch/mcp-linear), [dvcrn/mcp-server-linear](https://github.com/dvcrn/mcp-server-linear), …) — those are stdio subprocesses exposing plain CRUD with untrimmed SDK payloads, one instance per machine. This is an HTTP server one deploy can share across machines and agents, and response size is the entire point of its design.
+- **vs [linear-toon-mcp](https://github.com/hoblin/linear-toon-mcp)** — same motivation (the hosted MCP burns context), different mechanism: TOON re-encodes *all* the data in a more compact text format (~40–60% claimed). This server instead *selects fields server-side*, so unneeded data never crosses the wire at all, stays plain JSON (no extra format for the model to parse), keeps the hosted server's tool names for drop-in compatibility, and proves its savings from live traffic via `/stats`.
+
 ## How it works
 
 ```
