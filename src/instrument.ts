@@ -42,6 +42,18 @@ export const byteLogStore = new AsyncLocalStorage<ByteCtx>();
  *  cwd; override to a durable box path (e.g. /var/lib/linear-mcp/bytes.jsonl). */
 export const BYTE_LOG_PATH = process.env.BYTE_LOG_PATH ?? "./byte-log.jsonl";
 
+// HTTP mode always logs (GET /stats depends on the sink). The stdio entry
+// (src/stdio.ts) disables logging when BYTE_LOG_PATH is not explicitly set, so
+// an `npx linear-mcp-lean` run never drops a stray byte-log.jsonl into whatever
+// cwd the MCP client spawned it in.
+let byteLogEnabled = true;
+
+/** Turn the JSONL byte log off. Tool calls still run instrumented; the append
+ *  is skipped. */
+export function disableByteLog(): void {
+  byteLogEnabled = false;
+}
+
 // Byte-log write-health. A dead sink (e.g. EROFS under systemd
 // ProtectSystem=strict) is otherwise byte-identical to a legitimately-idle one
 // on /stats. The single writer (appendByteLog) and a boot-time probe seed these
@@ -73,6 +85,7 @@ function downstreamBytesOf(result: unknown): number {
 /** Best-effort JSONL append. Observability must never break a tool call, so a
  *  write failure (full disk, bad path) is warned-and-swallowed, not thrown. */
 async function appendByteLog(record: ByteRecord): Promise<void> {
+  if (!byteLogEnabled) return;
   try {
     await appendFile(BYTE_LOG_PATH, JSON.stringify(record) + "\n");
     lastWriteTs = record.ts;
