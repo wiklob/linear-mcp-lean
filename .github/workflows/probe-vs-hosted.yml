@@ -1,7 +1,11 @@
-# Weekly re-measurement of the byte savings vs the hosted Linear MCP, committed
-# into README.md between the savings markers. "Verified savings, re-measured
-# weekly": doubles as regression detection (a trim regression shows up as a
-# drop in the table) and as the repo's marketing asset.
+# Weekly re-measurement of the byte savings vs the hosted Linear MCP.
+# Deliberately commits NOTHING: the trim ratios only move when code moves
+# (ours or Linear's), so a weekly README commit would be pure churn. Instead
+# the run publishes the table to its step summary and FAILS when the aggregate
+# saving falls below the floor — the README badge turning red is the alarm.
+# The committed README table is refreshed by hand when it meaningfully changes:
+#   node probe-vs-hosted.mjs | tee /tmp/savings.txt   (env in the file header)
+#   node scripts/update-readme-savings.mjs /tmp/savings.txt
 #
 # Needs a live deploy + repo secrets (see probe-vs-hosted.mjs header):
 #   WRAPPER_URL, MCP_BEARER_TOKEN, LINEAR_API_KEY,
@@ -16,15 +20,18 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   measure:
     runs-on: ubuntu-latest
+    env:
+      # Alarm floor for the aggregate save% (last committed measurement: 62.8%
+      # on 2026-07-07). A drop below this means a trim regression somewhere —
+      # in this wrapper or in the hosted MCP's payloads.
+      SAVINGS_FLOOR: "55"
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: main
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -37,7 +44,7 @@ jobs:
         run: |
           if [ -z "$WRAPPER_URL" ]; then
             echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "WRAPPER_URL secret not set — skipping measurement"
+            echo "WRAPPER_URL secret not set — skipping measurement" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "present=true" >> "$GITHUB_OUTPUT"
           fi
@@ -52,18 +59,25 @@ jobs:
           PROBE_ISSUE_ID: ${{ secrets.PROBE_ISSUE_ID }}
           PROBE_TEAM: ${{ secrets.PROBE_TEAM }}
         run: node probe-vs-hosted.mjs | tee /tmp/savings.txt
-      - name: Splice the table into README
-        if: steps.gate.outputs.present == 'true'
-        run: node scripts/update-readme-savings.mjs /tmp/savings.txt
-      - name: Commit if changed
+      - name: Publish run summary
         if: steps.gate.outputs.present == 'true'
         run: |
-          if git diff --quiet README.md; then
-            echo "README unchanged — nothing to commit"
-            exit 0
+          {
+            echo "### Savings vs the hosted Linear MCP"
+            echo '```text'
+            cat /tmp/savings.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Regression check
+        if: steps.gate.outputs.present == 'true'
+        run: |
+          agg=$(grep -o 'aggregate save=[0-9.]*' /tmp/savings.txt | cut -d= -f2)
+          if [ -z "$agg" ]; then
+            echo "FAIL: could not parse aggregate save% from probe output"
+            exit 1
           fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add README.md
-          git commit -m "README: refresh measured savings vs hosted MCP"
-          git push
+          echo "aggregate save: ${agg}% (floor: ${SAVINGS_FLOOR}%)"
+          if ! awk -v a="$agg" -v f="$SAVINGS_FLOOR" 'BEGIN { exit (a + 0 >= f + 0) ? 0 : 1 }'; then
+            echo "FAIL: aggregate savings ${agg}% fell below the ${SAVINGS_FLOOR}% floor — trim regression"
+            exit 1
+          fi

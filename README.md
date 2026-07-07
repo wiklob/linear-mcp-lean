@@ -19,7 +19,21 @@ Built for LLM agents (Claude Code, or any MCP client) that call Linear tools hun
 ## Measured savings vs the hosted MCP
 
 <!-- savings:begin -->
-_Not yet measured — the weekly [probe-vs-hosted workflow](.github/workflows/probe-vs-hosted.yml) fills this in automatically once the repo's deploy secrets are configured. To measure by hand against your own deploy: `npm run probe:vs-hosted` (env in the file header)._
+Measured 2026-07-07 against a live deploy — identical requests to this wrapper and to the hosted Linear MCP, response bytes compared per call (per row for lists). The [probe-vs-hosted workflow](.github/workflows/probe-vs-hosted.yml) re-measures weekly and fails on regression:
+
+```text
+tool                   w.bytes   h.bytes  w.rows  h.rows  save%call  save%/row
+--------------------------------------------------------------------------------
+get_issue                 1422      2138       0       0      33.5%          —
+get_project                311      1100       0       0      71.7%          —
+get_team                    83       148       1       1      43.9%          —
+list_teams                 618      1256       8       8      50.8%      50.8%
+list_projects              270      2025       2       2      86.7%      86.7%
+list_issues               2788      9402       6       6      70.3%      70.3%
+list_issue_statuses        697       571       7       7     -22.1%     -22.1%
+--------------------------------------------------------------------------------
+TOTAL  wrapper=6189B (~1768 tok)  hosted=16640B (~4754 tok)  aggregate save=62.8%
+```
 <!-- savings:end -->
 
 ## How it compares
@@ -198,7 +212,7 @@ npm run probe:proxy      # hosted MCP accepts the PAK bearer (needs LINEAR_API_K
 npm run probe:vs-hosted  # byte-savings comparison vs the hosted MCP (needs a deploy; see file header)
 ```
 
-[CI](.github/workflows/ci.yml) runs the type-check, build, unit tests, and the four key-free probes (`auth`, `tools`, `bytelog`, `secrets`) on every PR and push to main. The [probe-vs-hosted workflow](.github/workflows/probe-vs-hosted.yml) re-measures the savings table above weekly.
+[CI](.github/workflows/ci.yml) runs the type-check, build, unit tests, and the four key-free probes (`auth`, `tools`, `bytelog`, `secrets`) on every PR and push to main. The [probe-vs-hosted workflow](.github/workflows/probe-vs-hosted.yml) re-measures the savings weekly and fails when the aggregate drops below its floor; refresh the committed table with `scripts/update-readme-savings.mjs` when the numbers meaningfully change.
 
 ## Deploy
 
