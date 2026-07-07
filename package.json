@@ -10,6 +10,7 @@
   },
   "scripts": {
     "build": "tsc",
+    "postbuild": "node bin/gen-version.mjs",
     "start": "node dist/index.js",
     "dev": "tsc --watch",
     "probe:auth": "bash ./probe-auth.sh",
