@@ -1,4 +1,4 @@
-# Deploy — linear-mcp-router on a Linux VPS
+# Deploy — linear-mcp-lean on a Linux VPS
 
 Reproducible deploy of the wrapper to any small Linux box (tested on Ubuntu
 24.04 — Hetzner, DigitalOcean, EC2, etc. all work). The wrapper binds

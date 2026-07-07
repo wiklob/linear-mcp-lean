@@ -1,4 +1,4 @@
-# linear-mcp-router
+# linear-mcp-lean
 
 A self-hosted [MCP](https://modelcontextprotocol.io) server for [Linear](https://linear.app) that **controls the response shape**: field-selected, flattened reads and minimal write acks instead of the fat full-object payloads the hosted Linear MCP returns.
 
