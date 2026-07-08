@@ -58,6 +58,10 @@ curl -fsS -H "Authorization: Bearer $MCP_BEARER_TOKEN" \
   https://linear-mcp.example.com/ready                           # 200 {linear.ok:true}; 503 {linear.ok:false,error} on a bad key
 curl -s -o /dev/null -w '%{http_code}\n' \
   -X POST https://linear-mcp.example.com/mcp -d '{}'             # 401 (no bearer)
+# PROVENANCE — which commit the running binary was built from. Bearer-gated (the SHA
+# is deploy detail). .commit must equal `git rev-parse HEAD` of the tree you built.
+curl -fsS -H "Authorization: Bearer $MCP_BEARER_TOKEN" \
+  https://linear-mcp.example.com/version | jq -r '.commitShort, .dirty, .builtAt'  # e.g. a823fee / false / <ISO>
 echo | openssl s_client -connect linear-mcp.example.com:443 2>/dev/null \
   | openssl x509 -noout -issuer                                  # issuer = Let's Encrypt
 sudo systemctl kill -s SIGKILL linear-mcp; sleep 3; systemctl is-active linear-mcp  # active (restart-on-failure)
@@ -82,8 +86,11 @@ npm run probe:auth      # asserts missing/invalid bearer -> 401
 
 ## Redeploy
 
-Rebuild locally (`npm run build`), rsync `dist/` again, then
-`systemctl restart linear-mcp` and re-run the `/health` + `/ready` curls.
+Rebuild locally (`npm run build` — its `postbuild` stamps `dist/build-info.json`
+with the current git SHA), rsync `dist/` again (the stamp ships inside it), then
+`systemctl restart linear-mcp`. Re-run the `/health` + `/ready` curls, then
+confirm the deploy actually advanced: `GET /version` `.commit` must equal
+`git rev-parse HEAD` of the tree you just built (and `.dirty` should be `false`).
 
 ## Rollback
 

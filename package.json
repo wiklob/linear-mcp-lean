@@ -30,6 +30,7 @@
   },
   "scripts": {
     "build": "tsc",
+    "postbuild": "node bin/gen-version.mjs",
     "prepack": "npm run build",
     "start": "node dist/index.js",
     "dev": "tsc --watch",

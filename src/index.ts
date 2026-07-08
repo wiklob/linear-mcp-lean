@@ -1,6 +1,7 @@
 import express from "express";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { bearerGate } from "./auth.js";
+import { getBuildInfo } from "./version.js";
 import { probeViewer } from "./linear.js";
 import { buildServer } from "./server.js";
 import { readByteStats, byteLogHealth, probeByteLogWritable } from "./instrument.js";
@@ -47,6 +48,17 @@ app.get("/stats", bearerGate, async (_req, res) => {
   } catch (err) {
     res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
   }
+});
+
+// Build provenance: which commit this binary was built from. Baked into
+// dist/build-info.json at build time (bin/gen-version.mjs) since the box has no
+// git. Bearer-GATED like /ready and /stats — the exact SHA is deploy detail that
+// shouldn't leak to the open internet (it maps the running code to a public
+// commit). Verify a redeploy with:
+//   curl -fsS -H "Authorization: Bearer $MCP_BEARER_TOKEN" .../version | jq -r .commit
+// and compare against `git rev-parse HEAD` of the build tree.
+app.get("/version", bearerGate, (_req, res) => {
+  res.json({ ok: true, ...getBuildInfo() });
 });
 
 // MCP endpoint, stateless Streamable HTTP. The bearer gate runs first → 401 on bad/missing token.
