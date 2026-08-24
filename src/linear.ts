@@ -1,4 +1,5 @@
 import { GraphQLClient, gql } from "graphql-request";
+import { parse } from "graphql";
 import { byteLogStore } from "./instrument.js";
 
 const LINEAR_API_URL = "https://api.linear.app/graphql";
@@ -53,8 +54,36 @@ export interface LinearGraphqlArgs {
   variables?: Record<string, unknown>;
 }
 
+/** True when the GraphQL document defines a mutation (or subscription) operation.
+ *  Parses the document rather than regex-matching the raw string — GraphQL treats
+ *  commas/whitespace as insignificant, so a leading-comma dodge (`,mutation {…}`)
+ *  parses as a valid mutation but slips a regex anchored to `^`/`}`. Fails CLOSED:
+ *  an unparseable document is treated as a mutation, so it requires the explicit
+ *  opt-in below rather than being forwarded. */
+function isMutation(query: string): boolean {
+  try {
+    return parse(query).definitions.some(
+      (d) =>
+        d.kind === "OperationDefinition" &&
+        (d.operation === "mutation" || d.operation === "subscription"),
+    );
+  } catch {
+    return true; // unparseable → fail closed (require LINEAR_GRAPHQL_ALLOW_MUTATION)
+  }
+}
+
 /** Execute an arbitrary GraphQL query/mutation and return Linear's raw result. */
 export async function linearGraphql(args: LinearGraphqlArgs): Promise<unknown> {
+  // V-36 (§1 med): the escape hatch runs arbitrary GraphQL with the server's PAK, so
+  // a leaked bearer could delete issues / rotate API keys via a raw mutation — wider
+  // than the curated tool surface. Gate mutations read-only-by-default; a mutation
+  // needs an explicit opt-in env flag. Reads are unaffected.
+  if (isMutation(args.query) && process.env.LINEAR_GRAPHQL_ALLOW_MUTATION !== "1") {
+    throw new Error(
+      "linear_graphql: mutations are disabled by default (V-36 security hardening). " +
+      "Set LINEAR_GRAPHQL_ALLOW_MUTATION=1 on the service to enable raw mutations.",
+    );
+  }
   return gqlClient().request(args.query, args.variables ?? {});
 }
 
@@ -317,6 +346,26 @@ function isId(s: string): boolean {
   return UUID_RE.test(s);
 }
 
+/**
+ * HTML-entity-decode an incoming name filter before resolution (V-459). Names
+ * sourced from HTML-ish surfaces arrive encoded ("Supply-side outreach &amp;
+ * licensing"), and the exact-match name filter then resolves to no entity. A
+ * name containing a LITERAL "&amp;" is vanishingly unlikely, so decoding is
+ * strictly a robustness win. `&amp;` decodes last to avoid double-decoding.
+ */
+function decodeHtmlEntities(s: string): string {
+  if (!s.includes("&")) return s;
+  return s
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)))
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&apos;/gi, "'")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&");
+}
+
 const RESOLVE_STATES = gql`
   query ResolveStates($name: String!) {
     workflowStates(filter: { name: { eq: $name } }) {
@@ -370,10 +419,11 @@ async function resolveIds(
   value: string,
 ): Promise<string[]> {
   if (isId(value)) return [value];
-  const data = await gqlClient().request<NodesById>(query, { name: value });
+  const name = decodeHtmlEntities(value);
+  const data = await gqlClient().request<NodesById>(query, { name });
   const ids = (data[root]?.nodes ?? []).map((n) => n.id);
   if (ids.length === 0) {
-    throw new Error(`unresolved ${kind} name: "${value}" — no ${kind} matched; pass a valid name or id`);
+    throw new Error(`unresolved ${kind} name: "${name}" — no ${kind} matched; pass a valid name or id`);
   }
   return ids;
 }
@@ -406,7 +456,7 @@ const RESOLVE_STATES_FOR_TEAM = gql`
 async function resolveStateIdForTeam(value: string, teamId: string): Promise<string> {
   if (isId(value)) return value;
   const data = await gqlClient().request<NodesById>(RESOLVE_STATES_FOR_TEAM, {
-    name: value,
+    name: decodeHtmlEntities(value),
     teamId,
   });
   const ids = (data.workflowStates?.nodes ?? []).map((n) => n.id);
@@ -1044,7 +1094,7 @@ const RESOLVE_INITIATIVES = gql`
 // would be case-sensitive and name-only.
 const resolveTeamIds = async (v: string): Promise<string[]> => {
   if (isId(v)) return [v];
-  return [(await getTeam(v)).id];
+  return [(await getTeam(decodeHtmlEntities(v))).id];
 };
 const resolveInitiativeIds = (v: string) =>
   resolveIds("initiative", RESOLVE_INITIATIVES, "initiatives", v);
@@ -1182,7 +1232,7 @@ interface RawIssueAck {
  *  project for context — reuse `listMilestones` (which carries the single-match
  *  project guard); a name without a project is a loud error. */
 async function resolveMilestoneId(args: SaveIssueArgs): Promise<string> {
-  const m = args.milestone!;
+  const m = decodeHtmlEntities(args.milestone!);
   if (isId(m)) return m;
   if (!args.project) {
     throw new Error(
