@@ -1,11 +1,13 @@
 import type { Request, Response, NextFunction } from "express";
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 
 function safeEqual(a: string, b: string): boolean {
-  const ab = Buffer.from(a);
-  const bb = Buffer.from(b);
-  if (ab.length !== bb.length) return false;
-  return timingSafeEqual(ab, bb);
+  // Hash both sides, then constant-time compare the digests. The digests are always
+  // equal-length (no early length branch), so even the token *length* leaks nothing
+  // via timing. The value compare stays constant-time.
+  const ah = createHash("sha256").update(a).digest();
+  const bh = createHash("sha256").update(b).digest();
+  return timingSafeEqual(ah, bh);
 }
 
 /**

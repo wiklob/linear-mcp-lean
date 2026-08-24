@@ -14,7 +14,7 @@
 //     one-line query over real traffic — zero transcript forensics.
 
 import { AsyncLocalStorage } from "node:async_hooks";
-import { access, appendFile, readFile } from "node:fs/promises";
+import { access, appendFile, readFile, stat, rename } from "node:fs/promises";
 import { constants } from "node:fs";
 import { dirname } from "node:path";
 
@@ -61,6 +61,12 @@ export function disableByteLog(): void {
 let lastError: string | null = null;
 let lastWriteTs: string | null = null;
 
+// Cap the JSONL sink so it can't grow unbounded. On reaching the cap the active log
+// is rotated aside (<path>.1, overwriting any prior .1), so disk stays ≤2× cap and
+// readByteStats' whole-file read stays ≤cap. Rotated data is dropped from /stats
+// aggregation — acceptable for an observability sink.
+const MAX_BYTE_LOG_BYTES = 25 * 1024 * 1024;
+
 /** Bytes of the trimmed body we return — measured off the MCP text envelope
  *  (`{ content: [{ type, text }], isError? }`) every tool produces. */
 function downstreamBytesOf(result: unknown): number {
@@ -87,6 +93,10 @@ function downstreamBytesOf(result: unknown): number {
 async function appendByteLog(record: ByteRecord): Promise<void> {
   if (!byteLogEnabled) return;
   try {
+    try {
+      const { size } = await stat(BYTE_LOG_PATH);
+      if (size >= MAX_BYTE_LOG_BYTES) await rename(BYTE_LOG_PATH, BYTE_LOG_PATH + ".1");
+    } catch { /* no file yet / stat race — nothing to rotate */ }
     await appendFile(BYTE_LOG_PATH, JSON.stringify(record) + "\n");
     lastWriteTs = record.ts;
     lastError = null;
