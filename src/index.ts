@@ -7,8 +7,15 @@ import { buildServer } from "./server.js";
 import { readByteStats, byteLogHealth, probeByteLogWritable } from "./instrument.js";
 
 const PORT = Number(process.env.PORT ?? 8080);
+// Loopback by default: this server holds a Linear PAK and is meant to sit behind a
+// TLS reverse proxy, so binding every interface would expose it to the network on
+// any box without a firewall. Containerised deployments that genuinely need an
+// external bind set HOST=0.0.0.0 explicitly.
+const HOST = process.env.HOST ?? "127.0.0.1";
 
 const app = express();
+// Don't advertise the framework to unauthenticated callers.
+app.disable("x-powered-by");
 app.use(express.json());
 
 // Liveness: intentionally UNGATED + upstream-free so a deploy reverse-proxy can
@@ -69,8 +76,15 @@ app.post("/mcp", bearerGate, async (req, res) => {
     void transport.close();
     void server.close();
   });
-  await server.connect(transport);
-  await transport.handleRequest(req, res, req.body);
+  // A throw here would otherwise reject the async handler and take the process
+  // down (no express error path for an unhandled rejection) — a trivial
+  // crash-DoS from a single malformed request.
+  try {
+    await server.connect(transport);
+    await transport.handleRequest(req, res, req.body);
+  } catch {
+    if (!res.headersSent) res.status(500).json({ error: "internal error" });
+  }
 });
 
 // Stateless transport does not support GET (SSE) or DELETE; reject them clearly (still gated).
@@ -80,12 +94,20 @@ const methodNotAllowed = (_req: express.Request, res: express.Response): void =>
 app.get("/mcp", bearerGate, methodNotAllowed);
 app.delete("/mcp", bearerGate, methodNotAllowed);
 
+// Terminal error boundary: keeps a malformed-JSON body-parser SyntaxError (or any
+// downstream throw) from returning a stack trace to unauthenticated callers.
+app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  if (res.headersSent) return;
+  const status = (err as { type?: string })?.type === "entity.parse.failed" ? 400 : 500;
+  res.status(status).json({ error: status === 400 ? "invalid json" : "internal error" });
+});
+
 // Seed byte-log write-health before accepting traffic, so a never-yet-called
 // dead sink (e.g. EROFS under systemd ProtectSystem=strict) already reports
 // writable:false on /stats instead of looking idle. Top-level await is legal here
 // (ES2022 + NodeNext); the probe is best-effort and never throws.
 await probeByteLogWritable();
 
-app.listen(PORT, () => {
-  console.log(`linear-mcp wrapper listening on :${PORT}`);
+app.listen(PORT, HOST, () => {
+  console.log(`linear-mcp wrapper listening on ${HOST}:${PORT}`);
 });
