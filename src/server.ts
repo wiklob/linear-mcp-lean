@@ -201,12 +201,16 @@ export function buildServer(): McpServer {
     {
       title: "Save project",
       description:
-        "Create (no `id`) or update (`id`) a project. Returns only {id, name, url}. Create requires `name` + `team`; `addInitiatives` (names or ids) are attached after create.",
+        "Create (no `id`) or update (`id`) a project. Returns only {id, name, url, status}. Create requires `name` + `team`; `status` moves the project's lifecycle status (resolved by name, errors loudly on an unknown one); `addInitiatives` (names or ids) are attached after create.",
       inputSchema: {
         id: z.string().optional().describe("Project id to UPDATE; omit to create"),
         team: z.string().optional().describe("Team name or id (required on create)"),
         name: z.string().optional().describe("Project name (required on create)"),
         description: z.string().optional().describe("Markdown body"),
+        status: z
+          .string()
+          .optional()
+          .describe("Project status name or id (Backlog, Planned, In Progress, Completed, Canceled)"),
         addInitiatives: z.array(z.string()).optional().describe("Initiative names or ids to attach"),
       },
     },
