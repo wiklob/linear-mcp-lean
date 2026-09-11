@@ -524,6 +524,90 @@ describe("saveComment", () => {
   });
 });
 
+// --- save_project -----------------------------------------------------------------
+
+describe("saveProject", () => {
+  const U_STATUS = "aaaaaaaa-0000-4000-8000-000000000015";
+  const STATUSES = {
+    projectStatuses: {
+      nodes: [
+        { id: U_PROJECT2, name: "Backlog" },
+        { id: U_STATUS, name: "Completed" },
+      ],
+    },
+  };
+  const updateAck = (status: string | null) => ({
+    projectUpdate: {
+      project: {
+        id: U_PROJECT,
+        name: "Wrapper",
+        url: "https://linear.app/x/project/wrapper",
+        status: status === null ? null : { name: status },
+      },
+    },
+  });
+
+  it("resolves a status NAME to its id and reads the new status back in the ack", async () => {
+    respond(STATUSES, updateAck("Completed"));
+    const { saveProject } = await linear();
+    const ack = await saveProject({ id: U_PROJECT, status: "Completed" });
+    expect(recorded[0].query).toContain("ProjectStatuses");
+    expect(recorded[1].variables).toEqual({ id: U_PROJECT, input: { statusId: U_STATUS } });
+    expect(ack).toEqual({
+      id: U_PROJECT,
+      name: "Wrapper",
+      url: "https://linear.app/x/project/wrapper",
+      status: "Completed",
+    });
+  });
+
+  it("matches the status name case-insensitively", async () => {
+    respond(STATUSES, updateAck("Completed"));
+    const { saveProject } = await linear();
+    await saveProject({ id: U_PROJECT, status: "completed" });
+    expect(recorded[1].variables).toEqual({ id: U_PROJECT, input: { statusId: U_STATUS } });
+  });
+
+  it("a UUID status skips resolution entirely", async () => {
+    respond(updateAck("Completed"));
+    const { saveProject } = await linear();
+    await saveProject({ id: U_PROJECT, status: U_STATUS });
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0].variables).toEqual({ id: U_PROJECT, input: { statusId: U_STATUS } });
+  });
+
+  it("unknown status name → loud throw naming the workspace's statuses", async () => {
+    respond(STATUSES);
+    const { saveProject } = await linear();
+    await expect(saveProject({ id: U_PROJECT, status: "Done" })).rejects.toThrow(
+      /unresolved project status: "Done".*Backlog, Completed/s,
+    );
+  });
+
+  it("create sets statusId alongside name + teamIds", async () => {
+    respond(STATUSES, teamsPayload, {
+      projectCreate: {
+        project: { id: U_PROJECT, name: "New", url: "https://p", status: { name: "Backlog" } },
+      },
+    });
+    const { saveProject } = await linear();
+    const ack = await saveProject({ name: "New", team: "LEAN", status: "Backlog" });
+    expect(recorded[2].variables).toEqual({
+      input: { name: "New", teamIds: [U_TEAM], statusId: U_PROJECT2 },
+    });
+    expect(ack.status).toBe("Backlog");
+  });
+
+  it("no status arg → no resolution call and no statusId in the input", async () => {
+    respond(updateAck("Backlog"));
+    const { saveProject } = await linear();
+    const ack = await saveProject({ id: U_PROJECT, name: "Renamed" });
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0].variables).toEqual({ id: U_PROJECT, input: { name: "Renamed" } });
+    expect(ack.status).toBe("Backlog");
+  });
+});
+
 // --- teams / users ----------------------------------------------------------------
 
 describe("getTeam / listTeams", () => {

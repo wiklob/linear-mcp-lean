@@ -46,7 +46,7 @@ If you need to page one of these, treat it as a gap to fix here — not a silent
 | `list_projects` (per row) | id, name, status{name,type} | description, startDate, targetDate, leadName, labels[], initiatives[] |
 | `get_project` | id, name, description, labels[] | status{name,type}, startDate, targetDate, leadName, initiatives[] |
 
-Write tools return minimal acks and nothing else: `save_issue` → `{id, identifier, state, url}`, `save_comment` → `{id, url}`, `save_project` → `{id, name, url}`, `save_milestone` → `{id, name}`. The long-tail read tools (`get_team`, `list_teams`, `get_user`, …) keep their closed shapes as documented in each tool's description.
+Write tools return minimal acks and nothing else: `save_issue` → `{id, identifier, state, url}`, `save_comment` → `{id, url}`, `save_project` → `{id, name, url, status}`, `save_milestone` → `{id, name}`. The long-tail read tools (`get_team`, `list_teams`, `get_user`, …) keep their closed shapes as documented in each tool's description.
 
 ## `linear_graphql` escape hatch
 
