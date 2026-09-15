@@ -32,12 +32,13 @@ To page: call `list_issues({project, …})`, then while `hasNextPage` is true, c
 | `list_milestones` / `get_milestone` | no | bare array / object |
 | `list_issue_labels` / `list_project_labels` | no (a `limit` arg caps rows) | bare array |
 | `list_teams` / `list_users` / `list_cycles` / `list_documents` | no | bare array |
+| `list_initiatives` / `get_initiative` | no (a `limit` arg caps rows) | bare array / object |
 
 If you need to page one of these, treat it as a gap to fix here — not a silent hole.
 
 ## Default vs `full` contract (per hot read tool)
 
-`full: true` is opt-in on the four hot read tools; absent → the lean default below, present → the documented superset. `list_issues` `full` enriches each **row** inside the same envelope.
+`full: true` is opt-in on the hot read tools; absent → the lean default below, present → the documented superset. `list_issues` `full` enriches each **row** inside the same envelope.
 
 | Tool | Default fields | `full: true` adds |
 |------|----------------|-------------------|
@@ -45,8 +46,34 @@ If you need to page one of these, treat it as a gap to fix here — not a silent
 | `list_issues` (per row) | identifier, title, state, statusType, priority, createdAt, blockedBy[], labels[], project{id}, projectMilestone{id}, gitBranchName | description, url, updatedAt, assigneeName, milestone{id,name} |
 | `list_projects` (per row) | id, name, status{name,type} | description, startDate, targetDate, leadName, labels[], initiatives[] |
 | `get_project` | id, name, description, labels[] | status{name,type}, startDate, targetDate, leadName, initiatives[] |
+| `list_initiatives` (per row) | id, name, status, parentInitiative{name} | description, url, targetDate, startedAt, completedAt, ownerName, projects[] |
+| `get_initiative` | id, name, status, parentInitiative{name} | description, url, targetDate, startedAt, completedAt, ownerName, projects[] |
 
-Write tools return minimal acks and nothing else: `save_issue` → `{id, identifier, state, url}`, `save_comment` → `{id, url}`, `save_project` → `{id, name, url, status}`, `save_milestone` → `{id, name}`. The long-tail read tools (`get_team`, `list_teams`, `get_user`, …) keep their closed shapes as documented in each tool's description.
+Write tools return minimal acks and nothing else: `save_issue` → `{id, identifier, state, url}`, `save_comment` → `{id, url}`, `save_project` → `{id, name, url, status}`, `save_milestone` → `{id, name}`, `save_initiative` → `{id, name, url, status}`. The long-tail read tools (`get_team`, `list_teams`, `get_user`, …) keep their closed shapes as documented in each tool's description.
+
+## Initiative nesting (`save_initiative`)
+
+Linear's initiative hierarchy is **not** a field on the initiative — it is a separate `InitiativeRelation` entity, so neither `initiativeCreate` nor `initiativeUpdate` accepts a parent id. `save_initiative` hides that: pass `parentInitiative` (name or id) on create or update and the wrapper applies the relation itself, after the write.
+
+- **Idempotent** — an initiative already nested under that parent is left alone; no duplicate relation.
+- **Re-parenting replaces** — a different existing parent has its relation deleted first, because creating a second one would leave the initiative with two parents and a silently wrong tree. Only the *relation* is ever deleted; initiative delete/archive is deliberately absent from the typed surface.
+- **`list_initiatives({parent})` reads direct children** (the parent's own `subInitiatives`), not every descendant.
+
+An unknown `parentInitiative` name fails before the write — so a typo never leaves a half-created initiative behind — and the error names the initiatives that do exist.
+
+### Nesting needs Linear's Enterprise plan
+
+**Linear gates sub-initiatives behind the Enterprise plan.** The schema introspects identically on every plan, so this is invisible until the relation mutation actually runs, at which point Linear answers `FEATURE_NOT_ACCESSIBLE` — "Subscribe to the Enterprise plan to access sub-initiatives in your workspace" (confirmed live, 2026-09-15).
+
+The wrapper surfaces that as a single actionable error naming the gate **and** the initiative that was nonetheless saved, with its id and url — the write lands before the nesting does, so losing the id to a bare upstream error would be the worse failure:
+
+```
+save_initiative: nesting failed — Linear gates sub-initiatives behind the Enterprise plan,
+so `parentInitiative` cannot be applied on this workspace. The initiative itself WAS saved
+(a3cba198-…, https://linear.app/…); it is simply not nested.
+```
+
+Everything else works on any plan: create, update/rename, status, owner, target date, and every read — including `parentInitiative` read-back and `list_initiatives({parent})`, which are ungated and simply return nothing while no nesting exists.
 
 ## `linear_graphql` escape hatch
 
@@ -54,4 +81,4 @@ For the rare need neither the lean default nor `full` covers, `linear_graphql({q
 
 ## Byte budget (why lean-by-default is worth it)
 
-A representative default `list_issues` row serializes to ~340 bytes ≈ 0.28× the hosted MCP's ~1.2 KB/issue; the `save_issue` ack is ~160 bytes vs a 1.5–2 KB full-object echo. Measure your own traffic: every call is logged (upstream vs returned bytes) and `GET /stats` reports per-tool trim ratios; `npm run probe:vs-hosted` compares your deploy against the hosted MCP live.
+A representative default `list_issues` row serializes to ~340 bytes ≈ 0.28× the hosted MCP's ~1.2 KB/issue; the `save_issue` ack is ~160 bytes vs a 1.5–2 KB full-object echo. Initiatives, measured 2026-09-15 over the same 18-initiative workspace: `list_initiatives` 2,260 B (126 B/row) vs the hosted MCP's 17,216 B (956 B/row) — 87% fewer bytes; `get_initiative` 121 B vs 825 B, and even the `full: true` superset (604 B) stays under the hosted default. Measure your own traffic: every call is logged (upstream vs returned bytes) and `GET /stats` reports per-tool trim ratios; `npm run probe:vs-hosted` compares your deploy against the hosted MCP live.

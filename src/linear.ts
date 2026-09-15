@@ -2294,3 +2294,449 @@ export async function saveStatusUpdate(args: SaveStatusUpdateArgs): Promise<Stat
   );
   return data.initiativeUpdateCreate.initiativeUpdate;
 }
+
+// --- initiatives: save_initiative / list_initiatives / get_initiative ---------
+// Initiatives were the one top-level Linear object with no typed tool (LEAN-14),
+// so an agent could read them but never author one — and the raw `linear_graphql`
+// escape hatch is read-only by default, so there was no workaround either. These
+// three close the gap; the escape hatch stays read-only.
+//
+// Nesting is NOT an input field. Neither InitiativeCreateInput nor
+// InitiativeUpdateInput carries a parent id (verified against the live schema) —
+// the hierarchy is a separate entity, `InitiativeRelation`, whose `initiative` is
+// the PARENT and whose `relatedInitiative` is the CHILD. So `parentInitiative` is
+// applied with its own `initiativeRelationCreate` after the initiative exists,
+// the same shape `save_project` uses for `addInitiatives`.
+
+// Shared selections — the lean row and the `full: true` superset. Interpolated
+// into the list/sub-list/get queries below so the four variants cannot drift.
+const INITIATIVE_FIELDS = `
+  id
+  name
+  status
+  parentInitiative {
+    name
+  }
+`;
+const INITIATIVE_FIELDS_FULL = `
+  ${INITIATIVE_FIELDS}
+  description
+  url
+  targetDate
+  startedAt
+  completedAt
+  owner {
+    name
+  }
+  projects {
+    nodes {
+      name
+    }
+  }
+`;
+
+const LIST_INITIATIVES_QUERY = gql`
+  query ListInitiatives($first: Int) {
+    initiatives(first: $first) {
+      nodes { ${INITIATIVE_FIELDS} }
+    }
+  }
+`;
+const LIST_INITIATIVES_QUERY_FULL = gql`
+  query ListInitiativesFull($first: Int) {
+    initiatives(first: $first) {
+      nodes { ${INITIATIVE_FIELDS_FULL} }
+    }
+  }
+`;
+// The `parent` filter reads the parent's OWN `subInitiatives` rather than
+// `InitiativeFilter.ancestors`: ancestors matches every descendant at any depth,
+// where "list what is nested under X" means X's direct children.
+const SUB_INITIATIVES_QUERY = gql`
+  query SubInitiatives($id: String!, $first: Int) {
+    initiative(id: $id) {
+      subInitiatives(first: $first) {
+        nodes { ${INITIATIVE_FIELDS} }
+      }
+    }
+  }
+`;
+const SUB_INITIATIVES_QUERY_FULL = gql`
+  query SubInitiativesFull($id: String!, $first: Int) {
+    initiative(id: $id) {
+      subInitiatives(first: $first) {
+        nodes { ${INITIATIVE_FIELDS_FULL} }
+      }
+    }
+  }
+`;
+const GET_INITIATIVE_QUERY = gql`
+  query GetInitiative($id: String!) {
+    initiative(id: $id) { ${INITIATIVE_FIELDS} }
+  }
+`;
+const GET_INITIATIVE_QUERY_FULL = gql`
+  query GetInitiativeFull($id: String!) {
+    initiative(id: $id) { ${INITIATIVE_FIELDS_FULL} }
+  }
+`;
+
+const INITIATIVE_CREATE = gql`
+  mutation InitiativeCreate($input: InitiativeCreateInput!) {
+    initiativeCreate(input: $input) {
+      initiative {
+        id
+        name
+        url
+        status
+      }
+    }
+  }
+`;
+const INITIATIVE_UPDATE_MUTATION = gql`
+  mutation InitiativeUpdateMutation($id: String!, $input: InitiativeUpdateInput!) {
+    initiativeUpdate(id: $id, input: $input) {
+      initiative {
+        id
+        name
+        url
+        status
+      }
+    }
+  }
+`;
+const INITIATIVE_PARENT_QUERY = gql`
+  query InitiativeParent($id: String!) {
+    initiative(id: $id) {
+      parentInitiative {
+        id
+      }
+    }
+  }
+`;
+// `initiativeRelations` takes no filter argument, so the re-parent path fetches
+// the workspace's relations and matches the child client-side — the same
+// fetch-then-match shape `resolveProjectStatusId` uses, and bounded by the same
+// reasoning: a workspace has a handful of initiatives, hence few relations.
+const INITIATIVE_RELATIONS_QUERY = gql`
+  query InitiativeRelations($first: Int) {
+    initiativeRelations(first: $first) {
+      nodes {
+        id
+        relatedInitiative {
+          id
+        }
+      }
+    }
+  }
+`;
+const INITIATIVE_RELATION_CREATE = gql`
+  mutation InitiativeRelationCreate($input: InitiativeRelationCreateInput!) {
+    initiativeRelationCreate(input: $input) {
+      success
+    }
+  }
+`;
+const INITIATIVE_RELATION_DELETE = gql`
+  mutation InitiativeRelationDelete($id: String!) {
+    initiativeRelationDelete(id: $id) {
+      success
+    }
+  }
+`;
+// Error-path only: an unresolved `parentInitiative` name is far more actionable
+// when the message names the initiatives that DO exist (a workspace has few).
+// Never queried on the happy path.
+const INITIATIVE_NAMES_QUERY = gql`
+  query InitiativeNames($first: Int) {
+    initiatives(first: $first) {
+      nodes {
+        name
+      }
+    }
+  }
+`;
+
+/** Lean initiative row/object — the default shape of `list_initiatives` and
+ *  `get_initiative`. `parentInitiative` is the nesting read-back. */
+export interface FlatInitiative {
+  id: string;
+  name: string;
+  status: string | null;
+  parentInitiative: { name: string } | null;
+}
+/** The `full: true` superset — `FlatInitiative` plus the documented extras. */
+export interface FlatInitiativeFull extends FlatInitiative {
+  description: string | null;
+  url: string | null;
+  targetDate: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  ownerName: string | null;
+  projects: string[];
+}
+interface RawInitiative {
+  id: string;
+  name: string;
+  status: string | null;
+  parentInitiative: { name: string } | null;
+  // full-only
+  description?: string | null;
+  url?: string | null;
+  targetDate?: string | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  owner?: { name: string } | null;
+  projects?: { nodes: Array<{ name: string }> } | null;
+}
+
+function flattenInitiative(i: RawInitiative): FlatInitiative {
+  return {
+    id: i.id,
+    name: i.name,
+    status: i.status ?? null,
+    parentInitiative: i.parentInitiative ? { name: i.parentInitiative.name } : null,
+  };
+}
+
+function flattenInitiativeFull(i: RawInitiative): FlatInitiativeFull {
+  return {
+    ...flattenInitiative(i),
+    description: i.description ?? null,
+    url: i.url ?? null,
+    targetDate: i.targetDate ?? null,
+    startedAt: i.startedAt ?? null,
+    completedAt: i.completedAt ?? null,
+    ownerName: i.owner?.name ?? null,
+    projects: (i.projects?.nodes ?? []).map((n) => n.name),
+  };
+}
+
+export interface ListInitiativesArgs {
+  parent?: string;
+  limit?: number;
+  full?: boolean;
+}
+
+/**
+ * List initiatives as lean rows; `parent` (name or id) narrows to that
+ * initiative's direct sub-initiatives, `full: true` returns the documented
+ * superset. An unknown `parent` name throws loudly (the shared resolver), never
+ * silently lists the whole workspace.
+ */
+export async function listInitiatives(
+  args: ListInitiativesArgs,
+): Promise<FlatInitiative[] | FlatInitiativeFull[]> {
+  const first = args.limit ?? 50;
+  // FlatInitiativeFull extends FlatInitiative, so the widened signature types
+  // both branches without a cast.
+  const flatten: (i: RawInitiative) => FlatInitiative = args.full
+    ? flattenInitiativeFull
+    : flattenInitiative;
+  if (args.parent) {
+    const id = await resolveOneId(resolveInitiativeIds, "initiative", args.parent);
+    const data = await gqlClient().request<{
+      initiative: { subInitiatives: { nodes: RawInitiative[] } } | null;
+    }>(args.full ? SUB_INITIATIVES_QUERY_FULL : SUB_INITIATIVES_QUERY, { id, first });
+    if (!data.initiative) throw new Error(`initiative not found: ${args.parent}`);
+    return data.initiative.subInitiatives.nodes.map(flatten);
+  }
+  const data = await gqlClient().request<{ initiatives: { nodes: RawInitiative[] } }>(
+    args.full ? LIST_INITIATIVES_QUERY_FULL : LIST_INITIATIVES_QUERY,
+    { first },
+  );
+  return data.initiatives.nodes.map(flatten);
+}
+
+/** Get one initiative. Default → the lean shape; `full: true` → the superset. */
+export async function getInitiative(
+  id: string,
+  full = false,
+): Promise<FlatInitiative | FlatInitiativeFull> {
+  const data = await gqlClient().request<{ initiative: RawInitiative | null }>(
+    full ? GET_INITIATIVE_QUERY_FULL : GET_INITIATIVE_QUERY,
+    { id },
+  );
+  const i = data.initiative;
+  if (!i) throw new Error(`initiative not found: ${id}`);
+  return full ? flattenInitiativeFull(i) : flattenInitiative(i);
+}
+
+/** The closed minimal ack `save_initiative` returns. */
+export interface InitiativeAck {
+  id: string;
+  name: string;
+  url: string;
+  status: string | null;
+}
+interface RawInitiativeAck {
+  id: string;
+  name: string;
+  url: string;
+  status: string | null;
+}
+
+export interface SaveInitiativeArgs {
+  id?: string;
+  name?: string;
+  description?: string;
+  parentInitiative?: string;
+  status?: string;
+  targetDate?: string;
+  owner?: string;
+  sortOrder?: number;
+}
+
+// `InitiativeStatus` is a closed GraphQL enum, not an entity — so unlike project
+// statuses there is nothing to resolve over the wire. Match case-insensitively
+// against the schema's values and throw loudly (naming them) on anything else,
+// rather than letting Linear reject the whole mutation with a shape error.
+const INITIATIVE_STATUSES = ["Proposed", "Planned", "Active", "Completed", "Canceled"] as const;
+
+function resolveInitiativeStatus(value: string): string {
+  const hit = INITIATIVE_STATUSES.find((s) => s.toLowerCase() === value.toLowerCase());
+  if (!hit) {
+    throw new Error(
+      `unresolved initiative status: "${value}" — must be one of: ${INITIATIVE_STATUSES.join(", ")}`,
+    );
+  }
+  return hit;
+}
+
+/**
+ * Resolve a `parentInitiative` arg (name or id) to exactly one id via the shared
+ * resolver, widening only the ZERO-match error to name the initiatives that do
+ * exist. The ambiguous-match error is left alone — listing every initiative
+ * would be noise when the caller's problem is that two share a name.
+ */
+async function resolveParentInitiativeId(value: string): Promise<string> {
+  try {
+    return await resolveOneId(resolveInitiativeIds, "initiative", value);
+  } catch (err) {
+    const message = (err as Error).message;
+    if (!message.startsWith("unresolved initiative name")) throw err;
+    const data = await gqlClient().request<{ initiatives: { nodes: Array<{ name: string }> } }>(
+      INITIATIVE_NAMES_QUERY,
+      { first: 250 },
+    );
+    const names = data.initiatives.nodes.map((n) => n.name);
+    throw new Error(`${message}; this workspace has: ${names.join(", ")}`);
+  }
+}
+
+/** Read an initiative's current parent id (null when it is top-level). */
+async function currentParentInitiativeId(id: string): Promise<string | null> {
+  const data = await gqlClient().request<{
+    initiative: { parentInitiative: { id: string } | null } | null;
+  }>(INITIATIVE_PARENT_QUERY, { id });
+  if (!data.initiative) throw new Error(`initiative not found: ${id}`);
+  return data.initiative.parentInitiative?.id ?? null;
+}
+
+/**
+ * Turn a nesting failure into something a caller can act on. Linear gates
+ * sub-initiatives behind the Enterprise plan — the schema introspects fine on
+ * every plan, so this only surfaces when the relation mutation actually RUNS
+ * (observed live 2026-09-15: `FEATURE_NOT_ACCESSIBLE`, "Subscribe to the
+ * Enterprise plan"). Naming the plan gate stops an agent re-trying a request
+ * that can never succeed on this workspace; any other error passes through
+ * verbatim.
+ */
+function nestFailureMessage(err: unknown, ack: RawInitiativeAck): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  const cause = /subInitiatives|FEATURE_NOT_ACCESSIBLE/.test(raw)
+    ? "Linear gates sub-initiatives behind the Enterprise plan, so `parentInitiative` cannot be applied on this workspace"
+    : raw;
+  // The initiative itself is already written at this point — say so, and name
+  // it, so the caller neither loses the id nor retries the whole save.
+  return `save_initiative: nesting failed — ${cause}. The initiative itself WAS saved (${ack.id}, ${ack.url}); it is simply not nested.`;
+}
+
+/**
+ * Nest `childId` under `parentId`. Idempotent: an initiative already under that
+ * parent is left alone (no duplicate relation). Re-parenting deletes the old
+ * relation first — creating a second one would leave the initiative with two
+ * parents, a silently wrong tree. Only the relation is deleted, never an
+ * initiative (initiative delete/archive stays out of the typed surface).
+ */
+async function nestInitiative(childId: string, parentId: string): Promise<void> {
+  if (childId === parentId) {
+    throw new Error("save_initiative: an initiative cannot be its own parentInitiative");
+  }
+  const existing = await currentParentInitiativeId(childId);
+  if (existing === parentId) return;
+  if (existing) {
+    const data = await gqlClient().request<{
+      initiativeRelations: { nodes: Array<{ id: string; relatedInitiative: { id: string } | null }> };
+    }>(INITIATIVE_RELATIONS_QUERY, { first: 250 });
+    const relation = data.initiativeRelations.nodes.find((n) => n.relatedInitiative?.id === childId);
+    if (!relation) {
+      throw new Error(
+        `save_initiative: ${childId} reports a parent but no matching initiative relation was found — re-parent it in Linear`,
+      );
+    }
+    await gqlClient().request(INITIATIVE_RELATION_DELETE, { id: relation.id });
+  }
+  await gqlClient().request(INITIATIVE_RELATION_CREATE, {
+    input: { initiativeId: parentId, relatedInitiativeId: childId },
+  });
+}
+
+/**
+ * Create (no `id`) or update (`id`) an initiative, returning only `{id, name,
+ * url, status}`. Create requires `name`. `owner` (name/id/"me") and
+ * `parentInitiative` (name or id) resolve server-side; `parentInitiative` is
+ * applied as a separate relation mutation after the write, so it works on both
+ * create and update.
+ */
+export async function saveInitiative(args: SaveInitiativeArgs): Promise<InitiativeAck> {
+  const input: Record<string, unknown> = {};
+  if (args.name !== undefined) input.name = args.name;
+  if (args.description !== undefined) input.description = args.description;
+  if (args.targetDate !== undefined) input.targetDate = args.targetDate;
+  if (args.sortOrder !== undefined) input.sortOrder = args.sortOrder;
+  if (args.status !== undefined) input.status = resolveInitiativeStatus(args.status);
+  if (args.owner) input.ownerId = await resolveOneId(resolveAssigneeIds, "owner", args.owner);
+
+  // Resolve the parent BEFORE the write: an unknown parent name should fail
+  // loudly without having half-created the initiative.
+  const parentId = args.parentInitiative
+    ? await resolveParentInitiativeId(args.parentInitiative)
+    : undefined;
+  // Caught before the write so the refusal costs nothing and cannot be mistaken
+  // for a nesting failure that left an initiative behind.
+  if (parentId && args.id === parentId) {
+    throw new Error("save_initiative: an initiative cannot be its own parentInitiative");
+  }
+
+  let initiative: RawInitiativeAck;
+  if (args.id) {
+    const data = await gqlClient().request<{ initiativeUpdate: { initiative: RawInitiativeAck } }>(
+      INITIATIVE_UPDATE_MUTATION,
+      { id: args.id, input },
+    );
+    initiative = data.initiativeUpdate.initiative;
+  } else {
+    if (!args.name) throw new Error("save_initiative create requires `name`");
+    const data = await gqlClient().request<{ initiativeCreate: { initiative: RawInitiativeAck } }>(
+      INITIATIVE_CREATE,
+      { input },
+    );
+    initiative = data.initiativeCreate.initiative;
+  }
+
+  if (parentId) {
+    try {
+      await nestInitiative(initiative.id, parentId);
+    } catch (err) {
+      throw new Error(nestFailureMessage(err, initiative));
+    }
+  }
+
+  return {
+    id: initiative.id,
+    name: initiative.name,
+    url: initiative.url,
+    status: initiative.status ?? null,
+  };
+}

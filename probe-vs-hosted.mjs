@@ -10,6 +10,8 @@
 //   PROBE_PROJECT     that project's name (list_issues / hosted get_project fixture)
 //   PROBE_ISSUE_ID    an issue identifier, e.g. ENG-123 (get_issue fixture)
 //   PROBE_TEAM        a team key or name (team-scoped list fixtures)
+// Optional:
+//   PROBE_INITIATIVE_ID  an initiative UUID — adds the get_initiative case
 // Plus both secrets:
 //   MCP_BEARER_TOKEN  authenticates to the wrapper
 //   LINEAR_API_KEY    authenticates to the hosted MCP as a PAK bearer (same
@@ -70,7 +72,17 @@ const CASES = [
   { tool: "list_projects", kind: "list", w: { team: TEAM }, h: { team: TEAM } },
   { tool: "list_issues", kind: "list", w: { project: PROJECT, limit: 25 }, h: { project: PROJECT, limit: 25 } },
   { tool: "list_issue_statuses", kind: "list", w: { team: TEAM }, h: { team: TEAM } },
+  { tool: "list_initiatives", kind: "list", w: {}, h: {} },
 ];
+
+// Optional fixture: `get_initiative` needs one initiative id, and a workspace
+// with no initiatives has none to name. Added only when set, so the probe keeps
+// running unchanged everywhere it already runs.
+if (process.env.PROBE_INITIATIVE_ID) {
+  const INITIATIVE = process.env.PROBE_INITIATIVE_ID;
+  // Arg names differ: the wrapper takes `id` (like its get_project), hosted takes `query`.
+  CASES.push({ tool: "get_initiative", kind: "get", w: { id: INITIATIVE }, h: { query: INITIATIVE } });
+}
 
 async function call(c, tool, args) {
   try {

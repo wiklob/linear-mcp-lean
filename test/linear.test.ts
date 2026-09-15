@@ -682,3 +682,308 @@ describe("getStatusUpdates", () => {
     expect(recorded[1].variables.filter).toEqual({ initiative: { id: { eq: U_INITIATIVE } } });
   });
 });
+
+// --- initiatives ------------------------------------------------------------------
+
+describe("saveInitiative", () => {
+  const U_PARENT = "aaaaaaaa-0000-4000-8000-000000000016";
+  const U_OTHER_PARENT = "aaaaaaaa-0000-4000-8000-000000000017";
+  const U_RELATION = "aaaaaaaa-0000-4000-8000-000000000018";
+
+  const createAck = {
+    initiativeCreate: {
+      initiative: {
+        id: U_INITIATIVE,
+        name: "Own media",
+        url: "https://linear.app/x/initiative/own-media",
+        status: "Planned",
+      },
+    },
+  };
+  const updateAck = (name: string) => ({
+    initiativeUpdate: {
+      initiative: {
+        id: U_INITIATIVE,
+        name,
+        url: "https://linear.app/x/initiative/own-media",
+        status: "Active",
+      },
+    },
+  });
+  /** No parent yet / already under `parentId` — the nest path's first read. */
+  const parentIs = (parentId: string | null) => ({
+    initiative: { parentInitiative: parentId === null ? null : { id: parentId } },
+  });
+
+  it("create: sends only the set fields and returns the closed ack", async () => {
+    respond(createAck);
+    const { saveInitiative } = await linear();
+    const ack = await saveInitiative({ name: "Own media", status: "Planned" });
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0].query).toContain("mutation InitiativeCreate(");
+    expect(recorded[0].variables).toEqual({ input: { name: "Own media", status: "Planned" } });
+    expect(ack).toEqual({
+      id: U_INITIATIVE,
+      name: "Own media",
+      url: "https://linear.app/x/initiative/own-media",
+      status: "Planned",
+    });
+  });
+
+  it("create without a name → loud throw before any mutation", async () => {
+    const { saveInitiative } = await linear();
+    await expect(saveInitiative({ description: "no name" })).rejects.toThrow(
+      "save_initiative create requires `name`",
+    );
+    expect(recorded).toHaveLength(0);
+  });
+
+  it("an `id` renames an existing initiative via initiativeUpdate", async () => {
+    respond(updateAck("Own media 2027"));
+    const { saveInitiative } = await linear();
+    const ack = await saveInitiative({ id: U_INITIATIVE, name: "Own media 2027" });
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0].query).toContain("mutation InitiativeUpdateMutation(");
+    expect(recorded[0].variables).toEqual({
+      id: U_INITIATIVE,
+      input: { name: "Own media 2027" },
+    });
+    expect(ack.name).toBe("Own media 2027");
+  });
+
+  it("parentInitiative nests via a separate relation mutation (parent, then child)", async () => {
+    respond(createAck, parentIs(null), { initiativeRelationCreate: { success: true } });
+    const { saveInitiative } = await linear();
+    await saveInitiative({ name: "Own media", parentInitiative: U_PARENT });
+    // A UUID parent skips resolution: create → read current parent → relate.
+    expect(recorded).toHaveLength(3);
+    expect(recorded[0].query).toContain("mutation InitiativeCreate(");
+    expect(recorded[2].variables).toEqual({
+      // `initiativeId` is the PARENT, `relatedInitiativeId` the CHILD.
+      input: { initiativeId: U_PARENT, relatedInitiativeId: U_INITIATIVE },
+    });
+  });
+
+  it("parentInitiative accepts a NAME, resolved before the write", async () => {
+    respond(
+      { initiatives: { nodes: [{ id: U_PARENT }] } },
+      createAck,
+      parentIs(null),
+      { initiativeRelationCreate: { success: true } },
+    );
+    const { saveInitiative } = await linear();
+    await saveInitiative({ name: "Own media", parentInitiative: "re:print" });
+    expect(recorded[0].query).toContain("query ResolveInitiatives(");
+    expect(recorded[0].variables).toEqual({ name: "re:print" });
+    expect(recorded[1].query).toContain("mutation InitiativeCreate(");
+    expect(recorded[3].variables).toEqual({
+      input: { initiativeId: U_PARENT, relatedInitiativeId: U_INITIATIVE },
+    });
+  });
+
+  it("unknown parent NAME → loud throw naming what exists, and nothing is created", async () => {
+    respond(
+      { initiatives: { nodes: [] } },
+      { initiatives: { nodes: [{ name: "re:print" }, { name: "Lambert" }] } },
+    );
+    const { saveInitiative } = await linear();
+    await expect(
+      saveInitiative({ name: "Own media", parentInitiative: "reprint" }),
+    ).rejects.toThrow(/unresolved initiative name: "reprint".*this workspace has: re:print, Lambert/s);
+    // Resolution fails BEFORE the create — no half-created initiative.
+    expect(recorded.some((r) => r.query.includes("InitiativeCreate"))).toBe(false);
+  });
+
+  it("ambiguous parent name → loud throw, not the workspace listing", async () => {
+    respond({ initiatives: { nodes: [{ id: U_PARENT }, { id: U_OTHER_PARENT }] } });
+    const { saveInitiative } = await linear();
+    await expect(
+      saveInitiative({ name: "Own media", parentInitiative: "Media" }),
+    ).rejects.toThrow('ambiguous initiative name: "Media" matched 2 — pass an id');
+    expect(recorded).toHaveLength(1);
+  });
+
+  it("already under that parent → idempotent, no relation mutation", async () => {
+    respond(updateAck("Own media"), parentIs(U_PARENT));
+    const { saveInitiative } = await linear();
+    await saveInitiative({ id: U_INITIATIVE, parentInitiative: U_PARENT });
+    expect(recorded).toHaveLength(2);
+    expect(recorded.some((r) => r.query.includes("InitiativeRelationCreate"))).toBe(false);
+  });
+
+  it("re-parenting deletes the stale relation before creating the new one", async () => {
+    respond(
+      updateAck("Own media"),
+      parentIs(U_OTHER_PARENT),
+      {
+        initiativeRelations: {
+          nodes: [
+            { id: "other", relatedInitiative: { id: U_PARENT } },
+            { id: U_RELATION, relatedInitiative: { id: U_INITIATIVE } },
+          ],
+        },
+      },
+      { initiativeRelationDelete: { success: true } },
+      { initiativeRelationCreate: { success: true } },
+    );
+    const { saveInitiative } = await linear();
+    await saveInitiative({ id: U_INITIATIVE, parentInitiative: U_PARENT });
+    expect(recorded[3].query).toContain("mutation InitiativeRelationDelete(");
+    expect(recorded[3].variables).toEqual({ id: U_RELATION });
+    expect(recorded[4].variables).toEqual({
+      input: { initiativeId: U_PARENT, relatedInitiativeId: U_INITIATIVE },
+    });
+  });
+
+  it("refuses to nest an initiative under itself, before any write", async () => {
+    const { saveInitiative } = await linear();
+    await expect(
+      saveInitiative({ id: U_INITIATIVE, parentInitiative: U_INITIATIVE }),
+    ).rejects.toThrow("cannot be its own parentInitiative");
+    expect(recorded).toHaveLength(0);
+  });
+
+  // Linear gates sub-initiatives behind the Enterprise plan — the schema
+  // introspects fine on every plan, so this only bites when the relation
+  // mutation runs (observed live 2026-09-15). The initiative is already written
+  // by then, so the error has to name it or the caller loses the id.
+  it("a plan-gated nesting failure names the gate AND the initiative that was saved", async () => {
+    respond(createAck, parentIs(null));
+    const { saveInitiative } = await linear();
+    // Make only the relation mutation fail, the way Linear does.
+    const realFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", async (input: unknown, init?: { body?: unknown }) => {
+      const body = JSON.parse(String(init?.body)) as { query: string };
+      if (body.query.includes("InitiativeRelationCreate")) {
+        throw new Error(
+          "Not allowed to access feature 'subInitiatives': {\"extensions\":{\"code\":\"FEATURE_NOT_ACCESSIBLE\"}}",
+        );
+      }
+      return (realFetch as (a: unknown, b?: unknown) => Promise<Response>)(input, init);
+    });
+    await expect(
+      saveInitiative({ name: "Own media", parentInitiative: U_PARENT }),
+    ).rejects.toThrow(
+      /nesting failed — Linear gates sub-initiatives behind the Enterprise plan.*The initiative itself WAS saved \(aaaaaaaa-0000-4000-8000-000000000014/s,
+    );
+  });
+
+  it("a non-plan nesting failure passes the upstream message through", async () => {
+    respond(createAck, parentIs(null));
+    const { saveInitiative } = await linear();
+    const realFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", async (input: unknown, init?: { body?: unknown }) => {
+      const body = JSON.parse(String(init?.body)) as { query: string };
+      if (body.query.includes("InitiativeRelationCreate")) throw new Error("upstream exploded");
+      return (realFetch as (a: unknown, b?: unknown) => Promise<Response>)(input, init);
+    });
+    await expect(
+      saveInitiative({ name: "Own media", parentInitiative: U_PARENT }),
+    ).rejects.toThrow(/nesting failed — upstream exploded/);
+  });
+
+  it("unknown status → loud throw naming the valid values, with no network call", async () => {
+    const { saveInitiative } = await linear();
+    await expect(saveInitiative({ name: "X", status: "Done" })).rejects.toThrow(
+      /unresolved initiative status: "Done".*Proposed, Planned, Active, Completed, Canceled/s,
+    );
+    expect(recorded).toHaveLength(0);
+  });
+
+  it("matches the status name case-insensitively", async () => {
+    respond(createAck);
+    const { saveInitiative } = await linear();
+    await saveInitiative({ name: "Own media", status: "planned" });
+    expect(recorded[0].variables).toEqual({ input: { name: "Own media", status: "Planned" } });
+  });
+
+  it('owner "me" resolves via the viewer query', async () => {
+    respond({ viewer: { id: U_USER } }, createAck);
+    const { saveInitiative } = await linear();
+    await saveInitiative({ name: "Own media", owner: "me" });
+    expect(recorded[1].variables).toEqual({ input: { name: "Own media", ownerId: U_USER } });
+  });
+});
+
+describe("listInitiatives / getInitiative", () => {
+  const U_PARENT = "aaaaaaaa-0000-4000-8000-000000000016";
+  const RAW_INITIATIVE = {
+    id: U_INITIATIVE,
+    name: "Own media",
+    status: "Active",
+    parentInitiative: { name: "re:print" },
+  };
+  const RAW_INITIATIVE_FULL = {
+    ...RAW_INITIATIVE,
+    description: "the media thread",
+    url: "https://linear.app/x/initiative/own-media",
+    targetDate: "2026-12-31",
+    startedAt: "2026-09-01T00:00:00.000Z",
+    completedAt: null,
+    owner: { name: "Wik" },
+    projects: { nodes: [{ name: "Newsletter" }] },
+  };
+  const LEAN = {
+    id: U_INITIATIVE,
+    name: "Own media",
+    status: "Active",
+    parentInitiative: { name: "re:print" },
+  };
+
+  it("lean default: closed rows, no description/url/owner", async () => {
+    respond({ initiatives: { nodes: [RAW_INITIATIVE] } });
+    const { listInitiatives } = await linear();
+    const rows = await listInitiatives({});
+    expect(recorded[0].query).toContain("query ListInitiatives(");
+    expect(recorded[0].variables).toEqual({ first: 50 });
+    expect(rows).toEqual([LEAN]);
+  });
+
+  it("full:true: the documented superset", async () => {
+    respond({ initiatives: { nodes: [RAW_INITIATIVE_FULL] } });
+    const { listInitiatives } = await linear();
+    const rows = await listInitiatives({ full: true });
+    expect(recorded[0].query).toContain("query ListInitiativesFull(");
+    expect(rows).toEqual([
+      {
+        ...LEAN,
+        description: "the media thread",
+        url: "https://linear.app/x/initiative/own-media",
+        targetDate: "2026-12-31",
+        startedAt: "2026-09-01T00:00:00.000Z",
+        completedAt: null,
+        ownerName: "Wik",
+        projects: ["Newsletter"],
+      },
+    ]);
+  });
+
+  it("`parent` reads the parent's DIRECT sub-initiatives", async () => {
+    respond({ initiative: { subInitiatives: { nodes: [RAW_INITIATIVE] } } });
+    const { listInitiatives } = await linear();
+    const rows = await listInitiatives({ parent: U_PARENT });
+    expect(recorded[0].query).toContain("query SubInitiatives(");
+    expect(recorded[0].variables).toEqual({ id: U_PARENT, first: 50 });
+    expect(rows).toEqual([LEAN]);
+  });
+
+  it("`parent` resolves a name and errors loudly when it matches nothing", async () => {
+    respond({ initiatives: { nodes: [] } });
+    const { listInitiatives } = await linear();
+    await expect(listInitiatives({ parent: "nope" })).rejects.toThrow(
+      'unresolved initiative name: "nope"',
+    );
+  });
+
+  it("getInitiative: lean by default, null-safe on a top-level initiative", async () => {
+    respond({ initiative: { ...RAW_INITIATIVE, parentInitiative: null } });
+    const { getInitiative } = await linear();
+    expect(await getInitiative(U_INITIATIVE)).toEqual({ ...LEAN, parentInitiative: null });
+  });
+
+  it("getInitiative: not found → loud throw", async () => {
+    respond({ initiative: null });
+    const { getInitiative } = await linear();
+    await expect(getInitiative("nope")).rejects.toThrow("initiative not found: nope");
+  });
+});

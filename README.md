@@ -148,7 +148,7 @@ For local experimentation, point at `http://localhost:8080/mcp` instead.
 
 ## Tools
 
-Same names and semantics as the hosted Linear MCP (36 tools total):
+Same names and semantics as the hosted Linear MCP (39 tools total):
 
 | Group | Tools |
 |-------|-------|
@@ -158,6 +158,7 @@ Same names and semantics as the hosted Linear MCP (36 tools total):
 | Labels & states | `list_issue_labels`, `list_project_labels`, `create_issue_label`, `list_issue_statuses`, `get_issue_status`, `list_cycles` |
 | Documents | `get_document`, `list_documents`, `save_document` |
 | Attachments | `get_attachment`, `create_attachment`, `prepare_attachment_upload`, `create_attachment_from_upload` |
+| Initiatives | `list_initiatives`, `get_initiative`, `save_initiative` |
 | Status updates | `get_status_updates`, `save_status_update` |
 | Proxied to hosted MCP | `search_documentation`, `extract_images`, `get_diff`, `get_diff_threads`, `list_diffs` |
 | Escape hatch | `linear_graphql` |
@@ -166,7 +167,7 @@ Same names and semantics as the hosted Linear MCP (36 tools total):
 
 Reads are **lean by default, broaden on demand**. The full per-tool field map lives in [`FIELDS.md`](./FIELDS.md); the contract in brief:
 
-- **`full: true`** (opt-in on `get_issue`, `list_issues`, `list_projects`, `get_project`) → a documented richer superset (assignee, lifecycle timestamps, state type, parent, estimate, due date, …). Absent → the minimal contract. You only pay the extra bytes when you ask.
+- **`full: true`** (opt-in on `get_issue`, `list_issues`, `list_projects`, `get_project`, `list_initiatives`, `get_initiative`) → a documented richer superset (assignee, lifecycle timestamps, state type, parent, estimate, due date, …). Absent → the minimal contract. You only pay the extra bytes when you ask.
 
 - **`list_issues` returns a pagination envelope** matching the hosted MCP shape:
   ```json

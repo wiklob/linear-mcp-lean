@@ -32,6 +32,9 @@ import {
   listCycles,
   getStatusUpdates,
   saveStatusUpdate,
+  listInitiatives,
+  getInitiative,
+  saveInitiative,
   linearGraphql,
 } from "./linear.js";
 import { proxyToHostedMcp } from "./proxy.js";
@@ -481,6 +484,58 @@ export function buildServer(): McpServer {
       },
     },
     async (args) => jsonContent(await saveStatusUpdate(args)),
+  );
+
+  server.registerTool(
+    "list_initiatives",
+    {
+      title: "List initiatives",
+      description:
+        "List initiatives as lean rows (id, name, status, parentInitiative{name}); full:true adds description, url, targetDate, startedAt, completedAt, ownerName, projects[]. `parent` (name or id) narrows to that initiative's DIRECT sub-initiatives; an unknown name errors loudly.",
+      inputSchema: {
+        parent: z.string().optional().describe("Parent initiative name or id — list its direct sub-initiatives"),
+        limit: z.number().int().positive().optional().describe("Max rows (default 50)"),
+        full: z.boolean().optional().describe("Return the richer documented superset instead of the lean default"),
+      },
+    },
+    async (args) => jsonContent(await listInitiatives(args)),
+  );
+
+  server.registerTool(
+    "get_initiative",
+    {
+      title: "Get initiative",
+      description:
+        "Get one initiative. Default → id, name, status, parentInitiative{name}; full:true adds description, url, targetDate, startedAt, completedAt, ownerName, projects[].",
+      inputSchema: {
+        id: z.string().describe("Initiative id"),
+        full: z.boolean().optional().describe("Return the richer documented superset instead of the lean default"),
+      },
+    },
+    async ({ id, full }) => jsonContent(await getInitiative(id, full)),
+  );
+
+  server.registerTool(
+    "save_initiative",
+    {
+      title: "Save initiative",
+      description:
+        "Create (no `id`) or update (`id`) an initiative. Returns only {id, name, url, status}. Create requires `name`. `parentInitiative` (name or id) nests this initiative under another — idempotent, and re-parenting replaces the existing link; NOTE that Linear gates sub-initiatives behind the Enterprise plan, so on other plans the initiative is still saved but nesting errors (the error says so and names the saved initiative). `owner` accepts a name, id, or \"me\". Initiative delete/archive is deliberately NOT exposed.",
+      inputSchema: {
+        id: z.string().optional().describe("Initiative id to UPDATE; omit to create"),
+        name: z.string().optional().describe("Initiative name (required on create)"),
+        description: z.string().optional().describe("Short description"),
+        parentInitiative: z.string().optional().describe("Parent initiative name or id to nest under"),
+        status: z
+          .string()
+          .optional()
+          .describe("Initiative status (Proposed, Planned, Active, Completed, Canceled) — matched case-insensitively"),
+        targetDate: z.string().optional().describe("Target date, YYYY-MM-DD"),
+        owner: z.string().optional().describe('Owner user name or id, or "me"'),
+        sortOrder: z.number().optional().describe("Sort order among siblings"),
+      },
+    },
+    async (args) => jsonContent(await saveInitiative(args)),
   );
 
   // --- hosted-MCP proxy fallback --------------------------------------------
