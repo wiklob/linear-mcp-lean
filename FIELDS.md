@@ -61,6 +61,20 @@ Linear's initiative hierarchy is **not** a field on the initiative — it is a s
 
 An unknown `parentInitiative` name fails before the write — so a typo never leaves a half-created initiative behind — and the error names the initiatives that do exist.
 
+### Nesting needs Linear's Enterprise plan
+
+**Linear gates sub-initiatives behind the Enterprise plan.** The schema introspects identically on every plan, so this is invisible until the relation mutation actually runs, at which point Linear answers `FEATURE_NOT_ACCESSIBLE` — "Subscribe to the Enterprise plan to access sub-initiatives in your workspace" (confirmed live, 2026-09-15).
+
+The wrapper surfaces that as a single actionable error naming the gate **and** the initiative that was nonetheless saved, with its id and url — the write lands before the nesting does, so losing the id to a bare upstream error would be the worse failure:
+
+```
+save_initiative: nesting failed — Linear gates sub-initiatives behind the Enterprise plan,
+so `parentInitiative` cannot be applied on this workspace. The initiative itself WAS saved
+(a3cba198-…, https://linear.app/…); it is simply not nested.
+```
+
+Everything else works on any plan: create, update/rename, status, owner, target date, and every read — including `parentInitiative` read-back and `list_initiatives({parent})`, which are ungated and simply return nothing while no nesting exists.
+
 ## `linear_graphql` escape hatch
 
 For the rare need neither the lean default nor `full` covers, `linear_graphql({query, variables})` runs an arbitrary GraphQL document against Linear and returns the **raw, untrimmed** result. Bearer-gated like every tool (the `/mcp` endpoint gate); errors surface, never swallowed. See the README for a usage example.

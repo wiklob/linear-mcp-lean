@@ -835,12 +835,51 @@ describe("saveInitiative", () => {
     });
   });
 
-  it("refuses to nest an initiative under itself", async () => {
-    respond(updateAck("Own media"));
+  it("refuses to nest an initiative under itself, before any write", async () => {
     const { saveInitiative } = await linear();
     await expect(
       saveInitiative({ id: U_INITIATIVE, parentInitiative: U_INITIATIVE }),
     ).rejects.toThrow("cannot be its own parentInitiative");
+    expect(recorded).toHaveLength(0);
+  });
+
+  // Linear gates sub-initiatives behind the Enterprise plan — the schema
+  // introspects fine on every plan, so this only bites when the relation
+  // mutation runs (observed live 2026-09-15). The initiative is already written
+  // by then, so the error has to name it or the caller loses the id.
+  it("a plan-gated nesting failure names the gate AND the initiative that was saved", async () => {
+    respond(createAck, parentIs(null));
+    const { saveInitiative } = await linear();
+    // Make only the relation mutation fail, the way Linear does.
+    const realFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", async (input: unknown, init?: { body?: unknown }) => {
+      const body = JSON.parse(String(init?.body)) as { query: string };
+      if (body.query.includes("InitiativeRelationCreate")) {
+        throw new Error(
+          "Not allowed to access feature 'subInitiatives': {\"extensions\":{\"code\":\"FEATURE_NOT_ACCESSIBLE\"}}",
+        );
+      }
+      return (realFetch as (a: unknown, b?: unknown) => Promise<Response>)(input, init);
+    });
+    await expect(
+      saveInitiative({ name: "Own media", parentInitiative: U_PARENT }),
+    ).rejects.toThrow(
+      /nesting failed — Linear gates sub-initiatives behind the Enterprise plan.*The initiative itself WAS saved \(aaaaaaaa-0000-4000-8000-000000000014/s,
+    );
+  });
+
+  it("a non-plan nesting failure passes the upstream message through", async () => {
+    respond(createAck, parentIs(null));
+    const { saveInitiative } = await linear();
+    const realFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", async (input: unknown, init?: { body?: unknown }) => {
+      const body = JSON.parse(String(init?.body)) as { query: string };
+      if (body.query.includes("InitiativeRelationCreate")) throw new Error("upstream exploded");
+      return (realFetch as (a: unknown, b?: unknown) => Promise<Response>)(input, init);
+    });
+    await expect(
+      saveInitiative({ name: "Own media", parentInitiative: U_PARENT }),
+    ).rejects.toThrow(/nesting failed — upstream exploded/);
   });
 
   it("unknown status → loud throw naming the valid values, with no network call", async () => {

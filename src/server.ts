@@ -520,7 +520,7 @@ export function buildServer(): McpServer {
     {
       title: "Save initiative",
       description:
-        "Create (no `id`) or update (`id`) an initiative. Returns only {id, name, url, status}. Create requires `name`. `parentInitiative` (name or id) nests this initiative under another — idempotent, and re-parenting replaces the existing link; `owner` accepts a name, id, or \"me\". Initiative delete/archive is deliberately NOT exposed.",
+        "Create (no `id`) or update (`id`) an initiative. Returns only {id, name, url, status}. Create requires `name`. `parentInitiative` (name or id) nests this initiative under another — idempotent, and re-parenting replaces the existing link; NOTE that Linear gates sub-initiatives behind the Enterprise plan, so on other plans the initiative is still saved but nesting errors (the error says so and names the saved initiative). `owner` accepts a name, id, or \"me\". Initiative delete/archive is deliberately NOT exposed.",
       inputSchema: {
         id: z.string().optional().describe("Initiative id to UPDATE; omit to create"),
         name: z.string().optional().describe("Initiative name (required on create)"),

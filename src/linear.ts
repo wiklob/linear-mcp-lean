@@ -2634,6 +2634,25 @@ async function currentParentInitiativeId(id: string): Promise<string | null> {
 }
 
 /**
+ * Turn a nesting failure into something a caller can act on. Linear gates
+ * sub-initiatives behind the Enterprise plan — the schema introspects fine on
+ * every plan, so this only surfaces when the relation mutation actually RUNS
+ * (observed live 2026-09-15: `FEATURE_NOT_ACCESSIBLE`, "Subscribe to the
+ * Enterprise plan"). Naming the plan gate stops an agent re-trying a request
+ * that can never succeed on this workspace; any other error passes through
+ * verbatim.
+ */
+function nestFailureMessage(err: unknown, ack: RawInitiativeAck): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  const cause = /subInitiatives|FEATURE_NOT_ACCESSIBLE/.test(raw)
+    ? "Linear gates sub-initiatives behind the Enterprise plan, so `parentInitiative` cannot be applied on this workspace"
+    : raw;
+  // The initiative itself is already written at this point — say so, and name
+  // it, so the caller neither loses the id nor retries the whole save.
+  return `save_initiative: nesting failed — ${cause}. The initiative itself WAS saved (${ack.id}, ${ack.url}); it is simply not nested.`;
+}
+
+/**
  * Nest `childId` under `parentId`. Idempotent: an initiative already under that
  * parent is left alone (no duplicate relation). Re-parenting deletes the old
  * relation first — creating a second one would leave the initiative with two
@@ -2684,6 +2703,11 @@ export async function saveInitiative(args: SaveInitiativeArgs): Promise<Initiati
   const parentId = args.parentInitiative
     ? await resolveParentInitiativeId(args.parentInitiative)
     : undefined;
+  // Caught before the write so the refusal costs nothing and cannot be mistaken
+  // for a nesting failure that left an initiative behind.
+  if (parentId && args.id === parentId) {
+    throw new Error("save_initiative: an initiative cannot be its own parentInitiative");
+  }
 
   let initiative: RawInitiativeAck;
   if (args.id) {
@@ -2701,7 +2725,13 @@ export async function saveInitiative(args: SaveInitiativeArgs): Promise<Initiati
     initiative = data.initiativeCreate.initiative;
   }
 
-  if (parentId) await nestInitiative(initiative.id, parentId);
+  if (parentId) {
+    try {
+      await nestInitiative(initiative.id, parentId);
+    } catch (err) {
+      throw new Error(nestFailureMessage(err, initiative));
+    }
+  }
 
   return {
     id: initiative.id,
