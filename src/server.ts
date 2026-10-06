@@ -122,7 +122,7 @@ export function buildServer(): McpServer {
     "get_project",
     {
       title: "Get project",
-      description: "Get one project. Default → id, name, description, labels[name]; full:true adds status{name,type}, dates, lead, initiatives.",
+      description: "Get one project. Default → id, name, description, labels[name]; full:true adds content (markdown body), status{name,type}, dates, lead, initiatives.",
       inputSchema: {
         id: z.string().describe("Project id"),
         full: z.boolean().optional().describe("Return the richer documented superset instead of the lean default"),
@@ -204,12 +204,18 @@ export function buildServer(): McpServer {
     {
       title: "Save project",
       description:
-        "Create (no `id`) or update (`id`) a project. Returns only {id, name, url, status}. Create requires `name` + `team`; `status` moves the project's lifecycle status (resolved by name, errors loudly on an unknown one); `addInitiatives` (names or ids) are attached after create.",
+        "Create (no `id`) or update (`id`) a project. Returns only {id, name, url, status}. Create requires `name` + `team`; `status` moves the project's lifecycle status (resolved by name, errors loudly on an unknown one); `addInitiatives` (names or ids) are attached after create. The long markdown body goes in `content`; `description` is Linear's ≤255-char summary line.",
       inputSchema: {
         id: z.string().optional().describe("Project id to UPDATE; omit to create"),
         team: z.string().optional().describe("Team name or id (required on create)"),
         name: z.string().optional().describe("Project name (required on create)"),
-        description: z.string().optional().describe("Markdown body"),
+        description: z
+          .string()
+          .optional()
+          .describe(
+            "Short one-line summary (≤255 chars). A longer value sent without `content` becomes the `content` body, its first line the summary",
+          ),
+        content: z.string().optional().describe("Markdown body (the project's full document)"),
         status: z
           .string()
           .optional()

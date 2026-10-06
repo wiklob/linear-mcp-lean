@@ -361,6 +361,16 @@ describe("getProject", () => {
     });
   });
 
+  it("full: reads the markdown body back as `content`", async () => {
+    respond({
+      project: { id: U_PROJECT, name: "Wrapper", description: "d", content: "# Body\n\nlong", labels: { nodes: [] } },
+    });
+    const { getProject } = await linear();
+    const p = await getProject(U_PROJECT, true);
+    expect(recorded[0].query).toMatch(/\bcontent\b/);
+    expect(p).toMatchObject({ description: "d", content: "# Body\n\nlong" });
+  });
+
   it("not found → loud throw", async () => {
     respond({ project: null });
     const { getProject } = await linear();
@@ -605,6 +615,46 @@ describe("saveProject", () => {
     expect(recorded).toHaveLength(1);
     expect(recorded[0].variables).toEqual({ id: U_PROJECT, input: { name: "Renamed" } });
     expect(ack.status).toBe("Backlog");
+  });
+
+  // V-854: a ~2,200-char markdown charter sent as `description` was rejected by
+  // Linear's 255-char cap on projectCreate — the body belongs in `content`.
+  const BODY = `## Supabase capacity charter\n\n${"Space ceiling, cache-hit ratios, heap density. ".repeat(50)}`;
+
+  it("create: an over-long `description` becomes `content`, its first line the summary", async () => {
+    respond(teamsPayload, {
+      projectCreate: { project: { id: U_PROJECT, name: "Supabase", url: "https://p", status: null } },
+    });
+    const { saveProject } = await linear();
+    await saveProject({ name: "Supabase", team: "LEAN", description: BODY });
+    expect(recorded[1].variables).toEqual({
+      input: { name: "Supabase", teamIds: [U_TEAM], content: BODY, description: "Supabase capacity charter" },
+    });
+  });
+
+  it("explicit `content` + short `description` pass through untouched", async () => {
+    respond(updateAck(null));
+    const { saveProject } = await linear();
+    await saveProject({ id: U_PROJECT, description: "One-liner", content: BODY });
+    expect(recorded[0].variables).toEqual({ id: U_PROJECT, input: { description: "One-liner", content: BODY } });
+  });
+
+  it("an over-long first line is truncated to the 255-char cap", async () => {
+    respond(updateAck(null));
+    const { saveProject } = await linear();
+    const long = "x".repeat(400);
+    await saveProject({ id: U_PROJECT, description: long });
+    const input = (recorded[0].variables as { input: Record<string, string> }).input;
+    expect(input.content).toBe(long);
+    expect(input.description).toHaveLength(255);
+  });
+
+  it("explicit `content` + over-long `description` → clear throw before any request", async () => {
+    const { saveProject } = await linear();
+    await expect(saveProject({ id: U_PROJECT, description: BODY, content: "body" })).rejects.toThrow(
+      /`description` is \d+ chars; Linear caps it at 255 — put the body in `content`/,
+    );
+    expect(recorded).toHaveLength(0);
   });
 });
 
