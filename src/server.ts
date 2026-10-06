@@ -10,6 +10,8 @@ import {
   listComments,
   saveIssue,
   saveComment,
+  createIssueRelation,
+  ISSUE_RELATION_TYPES,
   saveProject,
   saveMilestone,
   // long-tail GraphQL tools
@@ -197,6 +199,23 @@ export function buildServer(): McpServer {
       },
     },
     async (args) => jsonContent(await saveComment(args)),
+  );
+
+  // V-674: the typed, scoped relation create — the sanctioned path that keeps
+  // the raw-mutation guard (V-36) disabled by default.
+  server.registerTool(
+    "create_issue_relation",
+    {
+      title: "Create issue relation",
+      description:
+        "Create one relation between two issues (the typed path for issueRelationCreate — never enable raw mutations for this). `issue` and `related` take identifiers or ids; the relation reads `issue` —type→ `related` (blocks: issue blocks related; duplicate: issue is a duplicate of related). Idempotent: an identical existing relation is returned with created:false. Returns {id, type, issue, related, created}.",
+      inputSchema: {
+        issue: z.string().min(1).describe("Issue identifier or id the relation hangs off (the blocker / the duplicate)"),
+        related: z.string().min(1).describe("The other issue's identifier or id"),
+        type: z.enum(ISSUE_RELATION_TYPES).describe("Relation type: blocks | duplicate | related | similar"),
+      },
+    },
+    async (args) => jsonContent(await createIssueRelation(args)),
   );
 
   server.registerTool(

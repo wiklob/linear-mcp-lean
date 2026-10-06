@@ -524,6 +524,91 @@ describe("saveComment", () => {
   });
 });
 
+// --- create_issue_relation --------------------------------------------------------
+
+describe("createIssueRelation", () => {
+  const relations = (
+    out: Array<{ id: string; type: string; to: string }> = [],
+    inv: Array<{ id: string; type: string; from: string }> = [],
+  ) => ({
+    issue: {
+      id: U_ISSUE,
+      identifier: "LEAN-1",
+      relations: { nodes: out.map((r) => ({ id: r.id, type: r.type, relatedIssue: { id: r.to } })) },
+      inverseRelations: { nodes: inv.map((r) => ({ id: r.id, type: r.type, issue: { id: r.from } })) },
+    },
+  });
+
+  it("resolves both identifiers, creates the relation, returns the closed ack", async () => {
+    respond(
+      relations(),
+      { issue: { id: U_BLOCKER } }, // resolve LEAN-2 → UUID
+      { issueRelationCreate: { issueRelation: { id: "r1", type: "related" } } },
+    );
+    const { createIssueRelation } = await linear();
+    const ack = await createIssueRelation({ issue: "LEAN-1", related: "LEAN-2", type: "related" });
+    expect(recorded[0].variables).toEqual({ id: "LEAN-1" });
+    expect(recorded[2].query).toContain("issueRelationCreate(");
+    expect(recorded[2].variables).toEqual({
+      input: { issueId: U_ISSUE, relatedIssueId: U_BLOCKER, type: "related" },
+    });
+    expect(ack).toEqual({ id: "r1", type: "related", issue: "LEAN-1", related: "LEAN-2", created: true });
+  });
+
+  it("idempotent: an identical outgoing relation is returned, no mutation sent", async () => {
+    respond(relations([{ id: "r0", type: "duplicate", to: U_BLOCKER }]), { issue: { id: U_BLOCKER } });
+    const { createIssueRelation } = await linear();
+    const ack = await createIssueRelation({ issue: "LEAN-1", related: "LEAN-2", type: "duplicate" });
+    expect(recorded).toHaveLength(2);
+    expect(ack).toEqual({ id: "r0", type: "duplicate", issue: "LEAN-1", related: "LEAN-2", created: false });
+  });
+
+  it("symmetric types match the inverse direction too", async () => {
+    respond(relations([], [{ id: "r0", type: "similar", from: U_BLOCKER }]), { issue: { id: U_BLOCKER } });
+    const { createIssueRelation } = await linear();
+    const ack = await createIssueRelation({ issue: "LEAN-1", related: U_BLOCKER, type: "similar" });
+    expect(recorded).toHaveLength(1); // UUID `related` skips the lookup
+    expect(ack.created).toBe(false);
+  });
+
+  it("directional types do NOT treat the inverse as identical (B blocks A ≠ A blocks B)", async () => {
+    respond(
+      relations([{ id: "rx", type: "related", to: U_BLOCKER }], [{ id: "r0", type: "blocks", from: U_BLOCKER }]),
+      { issueRelationCreate: { issueRelation: { id: "r2", type: "blocks" } } },
+    );
+    const { createIssueRelation } = await linear();
+    const ack = await createIssueRelation({ issue: "LEAN-1", related: U_BLOCKER, type: "blocks" });
+    expect(recorded[1].variables).toEqual({
+      input: { issueId: U_ISSUE, relatedIssueId: U_BLOCKER, type: "blocks" },
+    });
+    expect(ack.created).toBe(true);
+  });
+
+  it("unknown type → loud throw naming the valid types, before any request", async () => {
+    const { createIssueRelation } = await linear();
+    await expect(createIssueRelation({ issue: "LEAN-1", related: "LEAN-2", type: "blockedBy" })).rejects.toThrow(
+      /unknown relation type "blockedBy".*blocks, duplicate, related, similar/,
+    );
+    expect(recorded).toHaveLength(0);
+  });
+
+  it("unknown issue → loud throw", async () => {
+    respond({ issue: null });
+    const { createIssueRelation } = await linear();
+    await expect(createIssueRelation({ issue: "LEAN-404", related: "LEAN-2", type: "related" })).rejects.toThrow(
+      "issue not found: LEAN-404",
+    );
+  });
+
+  it("self-relation → loud throw", async () => {
+    respond(relations());
+    const { createIssueRelation } = await linear();
+    await expect(createIssueRelation({ issue: "LEAN-1", related: U_ISSUE, type: "related" })).rejects.toThrow(
+      "cannot relate to itself",
+    );
+  });
+});
+
 // --- save_project -----------------------------------------------------------------
 
 describe("saveProject", () => {

@@ -1356,6 +1356,115 @@ export async function saveComment(args: SaveCommentArgs): Promise<CommentAck> {
   return { id: c.id, url: c.url };
 }
 
+// --- create_issue_relation (V-674) ------------------------------------------------
+// The typed, scoped path for `issueRelationCreate`. `save_issue.blockedBy` only
+// ever made `blocks`; every related / duplicate / similar link fell to
+// `linear_graphql`, whose mutations the V-36 guard disables. This tool creates
+// exactly one relation between two named issues — idempotently.
+
+/** Linear's `IssueRelationType` enum (verified by live introspection). */
+export const ISSUE_RELATION_TYPES = ["blocks", "duplicate", "related", "similar"] as const;
+/** Types with no direction: A related-to B is the same link as B related-to A. */
+const SYMMETRIC_RELATION_TYPES: ReadonlySet<string> = new Set(["related", "similar"]);
+
+const ISSUE_RELATIONS_QUERY = gql`
+  query IssueRelations($id: String!) {
+    issue(id: $id) {
+      id
+      identifier
+      relations {
+        nodes {
+          id
+          type
+          relatedIssue {
+            id
+          }
+        }
+      }
+      inverseRelations {
+        nodes {
+          id
+          type
+          issue {
+            id
+          }
+        }
+      }
+    }
+  }
+`;
+const ISSUE_RELATION_CREATE_ACK = gql`
+  mutation IssueRelationCreateAck($input: IssueRelationCreateInput!) {
+    issueRelationCreate(input: $input) {
+      issueRelation {
+        id
+        type
+      }
+    }
+  }
+`;
+
+export interface CreateIssueRelationArgs {
+  /** The issue the relation hangs off (identifier or id) — the blocker for
+   *  `blocks`, the duplicate for `duplicate`. */
+  issue: string;
+  /** The other issue (identifier or id). */
+  related: string;
+  /** blocks | duplicate | related | similar. */
+  type: string;
+}
+/** The closed minimal ack `create_issue_relation` returns. `created: false` →
+ *  an identical relation already existed and is returned untouched. */
+export interface IssueRelationAck {
+  id: string;
+  type: string;
+  issue: string;
+  related: string;
+  created: boolean;
+}
+
+/**
+ * Create one relation `issue —type→ related`, returning `{id, type, issue,
+ * related, created}`. Idempotent: an identical relation (same type, same
+ * direction — either direction for the symmetric `related`/`similar`) is
+ * returned with `created: false` instead of a duplicate being made.
+ */
+export async function createIssueRelation(args: CreateIssueRelationArgs): Promise<IssueRelationAck> {
+  if (!args.issue || !args.related) throw new Error("create_issue_relation requires `issue` and `related`");
+  if (!(ISSUE_RELATION_TYPES as readonly string[]).includes(args.type)) {
+    throw new Error(
+      `create_issue_relation: unknown relation type "${args.type}" — valid: ${ISSUE_RELATION_TYPES.join(", ")}`,
+    );
+  }
+  const data = await gqlClient().request<{
+    issue: {
+      id: string;
+      identifier: string;
+      relations: { nodes: Array<{ id: string; type: string; relatedIssue: { id: string } | null }> };
+      inverseRelations: { nodes: Array<{ id: string; type: string; issue: { id: string } | null }> };
+    } | null;
+  }>(ISSUE_RELATIONS_QUERY, { id: args.issue });
+  if (!data.issue) throw new Error(`issue not found: ${args.issue}`);
+  const relatedId = await resolveIssueUuid(args.related);
+  if (relatedId === data.issue.id) throw new Error("create_issue_relation: an issue cannot relate to itself");
+
+  const existing =
+    data.issue.relations.nodes.find((r) => r.type === args.type && r.relatedIssue?.id === relatedId) ??
+    (SYMMETRIC_RELATION_TYPES.has(args.type)
+      ? data.issue.inverseRelations.nodes.find((r) => r.type === args.type && r.issue?.id === relatedId)
+      : undefined);
+  if (existing) {
+    return { id: existing.id, type: existing.type, issue: data.issue.identifier, related: args.related, created: false };
+  }
+
+  const created = await gqlClient().request<{ issueRelationCreate: { issueRelation: { id: string; type: string } } }>(
+    ISSUE_RELATION_CREATE_ACK,
+    { input: { issueId: data.issue.id, relatedIssueId: relatedId, type: args.type } },
+  );
+  const r = created.issueRelationCreate.issueRelation;
+  return { id: r.id, type: r.type, issue: data.issue.identifier, related: args.related, created: true };
+}
+
 // --- save_project -----------------------------------------------------------------
 
 const PROJECT_CREATE = gql`

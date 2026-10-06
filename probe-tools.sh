@@ -35,6 +35,7 @@ expected=$(sort <<'EOF'
 create_attachment
 create_attachment_from_upload
 create_issue_label
+create_issue_relation
 extract_images
 get_attachment
 get_diff
