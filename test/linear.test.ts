@@ -649,6 +649,14 @@ describe("saveProject", () => {
     expect(input.description).toHaveLength(255);
   });
 
+  it("truncation never splits an emoji into a lone surrogate", async () => {
+    respond(updateAck(null));
+    const { saveProject } = await linear();
+    await saveProject({ id: U_PROJECT, description: `${"x".repeat(253)}🚀${"y".repeat(100)}` });
+    const input = (recorded[0].variables as { input: Record<string, string> }).input;
+    expect(input.description).toBe(`${"x".repeat(253)}…`);
+  });
+
   it("explicit `content` + over-long `description` → clear throw before any request", async () => {
     const { saveProject } = await linear();
     await expect(saveProject({ id: U_PROJECT, description: BODY, content: "body" })).rejects.toThrow(

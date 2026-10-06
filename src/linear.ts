@@ -1496,8 +1496,11 @@ export function projectTextInput(args: Pick<SaveProjectArgs, "description" | "co
       .split("\n")
       .map((l) => l.replace(/^#+\s*/, "").trim())
       .find((l) => l.length > 0) ?? "";
+  // Cut never leaves a lone high surrogate (a split emoji) before the ellipsis.
   input.description =
-    firstLine.length <= PROJECT_DESCRIPTION_MAX ? firstLine : `${firstLine.slice(0, PROJECT_DESCRIPTION_MAX - 1)}…`;
+    firstLine.length <= PROJECT_DESCRIPTION_MAX
+      ? firstLine
+      : `${firstLine.slice(0, PROJECT_DESCRIPTION_MAX - 1).replace(/[\uD800-\uDBFF]$/, "")}…`;
   return input;
 }
 
