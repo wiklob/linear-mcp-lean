@@ -1372,7 +1372,7 @@ const ISSUE_RELATIONS_QUERY = gql`
     issue(id: $id) {
       id
       identifier
-      relations {
+      relations(first: 250) {
         nodes {
           id
           type
@@ -1381,7 +1381,7 @@ const ISSUE_RELATIONS_QUERY = gql`
           }
         }
       }
-      inverseRelations {
+      inverseRelations(first: 250) {
         nodes {
           id
           type
@@ -1445,13 +1445,15 @@ export async function createIssueRelation(args: CreateIssueRelationArgs): Promis
     } | null;
   }>(ISSUE_RELATIONS_QUERY, { id: args.issue });
   if (!data.issue) throw new Error(`issue not found: ${args.issue}`);
-  const relatedId = await resolveIssueUuid(args.related);
-  if (relatedId === data.issue.id) throw new Error("create_issue_relation: an issue cannot relate to itself");
+  // Linear returns lowercase UUIDs; a passed-through uppercase id would miss the
+  // idempotency match and the self-relation guard.
+  const relatedId = (await resolveIssueUuid(args.related)).toLowerCase();
+  if (relatedId === data.issue.id.toLowerCase()) throw new Error("create_issue_relation: an issue cannot relate to itself");
 
   const existing =
-    data.issue.relations.nodes.find((r) => r.type === args.type && r.relatedIssue?.id === relatedId) ??
+    data.issue.relations.nodes.find((r) => r.type === args.type && r.relatedIssue?.id.toLowerCase() === relatedId) ??
     (SYMMETRIC_RELATION_TYPES.has(args.type)
-      ? data.issue.inverseRelations.nodes.find((r) => r.type === args.type && r.issue?.id === relatedId)
+      ? data.issue.inverseRelations.nodes.find((r) => r.type === args.type && r.issue?.id.toLowerCase() === relatedId)
       : undefined);
   if (existing) {
     return { id: existing.id, type: existing.type, issue: data.issue.identifier, related: args.related, created: false };
