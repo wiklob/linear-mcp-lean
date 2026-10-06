@@ -1544,6 +1544,56 @@ async function resolveProjectStatusId(value: string): Promise<string> {
   return hits[0].id;
 }
 
+// Project labels are a distinct entity from issue labels (resolveLabelIds would
+// match issueLabels — wrong here) and a workspace has a handful, so the name→id
+// resolution fetches them once per call and matches client-side, naming the
+// labels that DO exist on a miss.
+const PROJECT_LABELS_ALL = gql`
+  query ProjectLabelsAll($first: Int) {
+    projectLabels(first: $first) {
+      nodes {
+        id
+        name
+        isGroup
+      }
+    }
+  }
+`;
+
+/**
+ * Resolve project-label names-or-ids to ids. UUIDs pass through; a name matches
+ * case-insensitively. Zero matches → loud throw naming the workspace's project
+ * labels; >1 → "ambiguous"; a label GROUP → loud throw (Linear applies only
+ * leaf labels). Only fetches when at least one entry is a name.
+ */
+async function resolveProjectLabelIds(values: string[]): Promise<string[]> {
+  if (values.every(isId)) return values;
+  const data = await gqlClient().request<{
+    projectLabels: { nodes: Array<{ id: string; name: string; isGroup: boolean }> };
+  }>(PROJECT_LABELS_ALL, { first: 250 });
+  const all = data.projectLabels?.nodes ?? [];
+  return values.map((value) => {
+    if (isId(value)) return value;
+    const name = decodeHtmlEntities(value);
+    const hits = all.filter((l) => l.name.toLowerCase() === name.toLowerCase());
+    if (hits.length === 0) {
+      throw new Error(
+        `unresolved project label: "${name}" — no project label matched; this workspace has: ${all
+          .filter((l) => !l.isGroup)
+          .map((l) => l.name)
+          .join(", ")}`,
+      );
+    }
+    if (hits.length > 1) {
+      throw new Error(`ambiguous project label: "${name}" matched ${hits.length} — pass an id`);
+    }
+    if (hits[0].isGroup) {
+      throw new Error(`project label "${name}" is a label group — pass one of its labels`);
+    }
+    return hits[0].id;
+  });
+}
+
 /** The closed minimal ack `save_project` returns. `status` is the read-back of
  *  the project's lifecycle status after the write — the counterpart of
  *  `save_issue`'s `state`, and the only confirmation a status flip landed. */
@@ -1565,6 +1615,11 @@ export interface SaveProjectArgs {
   team?: string;
   name?: string;
   description?: string;
+  /** The long markdown body (Linear's `content`), distinct from the short
+   *  `description` summary line. */
+  content?: string;
+  /** Project label names or ids — REPLACES the project's label set (`[]` clears). */
+  labels?: string[];
   status?: string;
   addInitiatives?: string[];
 }
@@ -1574,17 +1629,22 @@ export interface SaveProjectArgs {
  * status}`. Create requires a `team` (Linear's `projectCreate` requires
  * `teamIds`). `status` moves the project between lifecycle statuses
  * (Backlog / Planned / In Progress / Completed / Canceled) by name or id.
+ * `labels` (project-label names or ids) replaces the project's label set;
+ * `content` sets the long markdown body (`description` is the short summary).
  * Initiatives are NOT a create-input field — each `addInitiatives` entry is
  * attached with a separate `initiativeToProjectCreate` after the project exists.
  */
 export async function saveProject(args: SaveProjectArgs): Promise<ProjectAck> {
   let project: RawProjectAck;
   const statusId = args.status ? await resolveProjectStatusId(args.status) : undefined;
+  const labelIds = args.labels ? await resolveProjectLabelIds(args.labels) : undefined;
   if (args.id) {
     const input: Record<string, unknown> = {};
     if (args.name !== undefined) input.name = args.name;
     if (args.description !== undefined) input.description = args.description;
+    if (args.content !== undefined) input.content = args.content;
     if (statusId !== undefined) input.statusId = statusId;
+    if (labelIds !== undefined) input.labelIds = labelIds;
     const data = await gqlClient().request<{ projectUpdate: { project: RawProjectAck } }>(
       PROJECT_UPDATE,
       { id: args.id, input },
@@ -1596,7 +1656,9 @@ export async function saveProject(args: SaveProjectArgs): Promise<ProjectAck> {
     const teamId = await resolveOneId(resolveTeamIds, "team", args.team);
     const input: Record<string, unknown> = { name: args.name, teamIds: [teamId] };
     if (args.description !== undefined) input.description = args.description;
+    if (args.content !== undefined) input.content = args.content;
     if (statusId !== undefined) input.statusId = statusId;
+    if (labelIds !== undefined) input.labelIds = labelIds;
     const data = await gqlClient().request<{ projectCreate: { project: RawProjectAck } }>(
       PROJECT_CREATE,
       { input },

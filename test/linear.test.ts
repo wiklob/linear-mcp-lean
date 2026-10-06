@@ -691,6 +691,64 @@ describe("saveProject", () => {
     expect(recorded[0].variables).toEqual({ id: U_PROJECT, input: { name: "Renamed" } });
     expect(ack.status).toBe("Backlog");
   });
+
+  const PROJECT_LABELS = {
+    projectLabels: {
+      nodes: [
+        { id: U_LABEL, name: "Infra", isGroup: false },
+        { id: U_STATE, name: "Area", isGroup: true },
+        { id: U_STATE2, name: "Growth", isGroup: false },
+      ],
+    },
+  };
+
+  it("labels resolve against PROJECT labels (case-insensitive), ids pass through; content is set", async () => {
+    respond(PROJECT_LABELS, updateAck("Backlog"));
+    const { saveProject } = await linear();
+    await saveProject({ id: U_PROJECT, labels: ["infra", U_MILESTONE], content: "# Overview\n\nlong body" });
+    expect(recorded[0].query).toContain("projectLabels(");
+    expect(recorded[0].query).not.toContain("issueLabels");
+    expect(recorded[1].variables).toEqual({
+      id: U_PROJECT,
+      input: { content: "# Overview\n\nlong body", labelIds: [U_LABEL, U_MILESTONE] },
+    });
+  });
+
+  it("all-UUID labels skip resolution; [] clears the set", async () => {
+    respond(updateAck("Backlog"), updateAck("Backlog"));
+    const { saveProject } = await linear();
+    await saveProject({ id: U_PROJECT, labels: [U_LABEL] });
+    await saveProject({ id: U_PROJECT, labels: [] });
+    expect(recorded).toHaveLength(2);
+    expect(recorded[0].variables).toEqual({ id: U_PROJECT, input: { labelIds: [U_LABEL] } });
+    expect(recorded[1].variables).toEqual({ id: U_PROJECT, input: { labelIds: [] } });
+  });
+
+  it("unknown project label → loud throw naming the workspace's labels, before any write", async () => {
+    respond(PROJECT_LABELS);
+    const { saveProject } = await linear();
+    await expect(saveProject({ id: U_PROJECT, labels: ["Nope"] })).rejects.toThrow(
+      /unresolved project label: "Nope".*has: Infra, Growth$/,
+    );
+    expect(recorded).toHaveLength(1);
+  });
+
+  it("a label GROUP name → loud throw", async () => {
+    respond(PROJECT_LABELS);
+    const { saveProject } = await linear();
+    await expect(saveProject({ id: U_PROJECT, labels: ["Area"] })).rejects.toThrow("is a label group");
+  });
+
+  it("create carries content + labelIds alongside name + teamIds", async () => {
+    respond(PROJECT_LABELS, teamsPayload, {
+      projectCreate: { project: { id: U_PROJECT, name: "New", url: "https://p", status: null } },
+    });
+    const { saveProject } = await linear();
+    await saveProject({ name: "New", team: "LEAN", labels: ["Growth"], content: "body" });
+    expect(recorded[2].variables).toEqual({
+      input: { name: "New", teamIds: [U_TEAM], content: "body", labelIds: [U_STATE2] },
+    });
+  });
 });
 
 // --- teams / users ----------------------------------------------------------------

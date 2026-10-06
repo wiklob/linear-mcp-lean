@@ -223,12 +223,17 @@ export function buildServer(): McpServer {
     {
       title: "Save project",
       description:
-        "Create (no `id`) or update (`id`) a project. Returns only {id, name, url, status}. Create requires `name` + `team`; `status` moves the project's lifecycle status (resolved by name, errors loudly on an unknown one); `addInitiatives` (names or ids) are attached after create.",
+        "Create (no `id`) or update (`id`) a project. Returns only {id, name, url, status}. Create requires `name` + `team`; `status` moves the project's lifecycle status (resolved by name, errors loudly on an unknown one); `labels` (project-label names or ids, resolved against list_project_labels; unknown names error loudly) REPLACES the project's labels — [] clears; `content` is the long markdown body, distinct from the short `description`; `addInitiatives` (names or ids) are attached after create.",
       inputSchema: {
         id: z.string().optional().describe("Project id to UPDATE; omit to create"),
         team: z.string().optional().describe("Team name or id (required on create)"),
         name: z.string().optional().describe("Project name (required on create)"),
-        description: z.string().optional().describe("Markdown body"),
+        description: z.string().optional().describe("Short summary line (Linear's project description)"),
+        content: z.string().optional().describe("Long markdown body (the project overview page)"),
+        labels: z
+          .array(z.string())
+          .optional()
+          .describe("Project label names or ids — replaces the current set; [] clears"),
         status: z
           .string()
           .optional()
