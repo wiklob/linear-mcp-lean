@@ -1,0 +1,21 @@
+{
+  "repo": "wiklob/linear-mcp-lean",
+  "linearTeam": "linear-mcp-lean",
+  "baseBranch": "main",
+  "requiredCheck": "type-check",
+  "gate": "npx tsc --noEmit && npm test",
+  "services": [
+    {
+      "name": "server",
+      "covers": ["src/", "bin/gen-version.mjs", "package.json", "package-lock.json", "tsconfig.json", "bin/deploy.sh"],
+      "deploy": "bin/deploy.sh",
+      "verify": "bin/check-deploy.sh"
+    }
+  ],
+  "servicesNote": "Landing deploys the server only: bin/deploy.sh builds locally, rsyncs dist/ (+ package files) to /opt/linear-mcp on the shared Hetzner box and restarts the linear-mcp unit. The systemd unit, Caddyfile and /etc/linear-mcp.env in deploy/ are still shipped by hand — deploy/README.md.",
+  "deployHealth": "bin/check-deploy.sh --live",
+  "automerge": {
+    "maxLines": 400,
+    "deny": ["deploy/", ".github/", ".claude/", "bin/", "src/auth.ts", "src/proxy.ts", "auth", "package.json", "package-lock.json"]
+  }
+}
