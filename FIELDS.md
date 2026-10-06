@@ -49,7 +49,7 @@ If you need to page one of these, treat it as a gap to fix here — not a silent
 | `list_initiatives` (per row) | id, name, status, parentInitiative{name} | description, url, targetDate, startedAt, completedAt, ownerName, projects[] |
 | `get_initiative` | id, name, status, parentInitiative{name} | description, url, targetDate, startedAt, completedAt, ownerName, projects[] |
 
-Write tools return minimal acks and nothing else: `save_issue` → `{id, identifier, state, url}`, `save_comment` → `{id, url}`, `create_issue_relation` → `{id, type, issue, related, created}` (idempotent: an identical existing relation comes back with `created: false`), `save_project` → `{id, name, url, status}`, `save_milestone` → `{id, name}`, `save_initiative` → `{id, name, url, status}`. The long-tail read tools (`get_team`, `list_teams`, `get_user`, …) keep their closed shapes as documented in each tool's description.
+Write tools return minimal acks and nothing else: `save_issue` → `{id, identifier, state, url}`, `save_comment` → `{id, url}`, `create_issue_relation` → `{id, type, issue, related, created}` (idempotent: an identical existing relation comes back with `created: false`), `save_project` → `{id, name, url, status}`, `save_milestone` → `{id, name}`, `save_initiative` → `{id, name, url, status}`, `delete_git_automation_state` → `{deleted, team, event, state}` (one rule, by id, read back from the named team first — an id not on that team deletes nothing). The long-tail read tools (`get_team`, `list_teams`, `get_user`, …) keep their closed shapes as documented in each tool's description.
 
 ## Project labels and body (`save_project`)
 

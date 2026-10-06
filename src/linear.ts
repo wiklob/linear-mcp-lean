@@ -2239,6 +2239,123 @@ export async function getIssueStatus(id: string): Promise<FlatState> {
   return { id: s.id, name: s.name, type: s.type, color: s.color };
 }
 
+// --- git automations: list_git_automation_states / delete_git_automation_state (V-674)
+// A team's "move the issue to state X when its PR hits event Y" rules live in
+// `Team.gitAutomationStates` (the `Team.*WorkflowState` fields read null). The
+// delete is a config deletion, so it is kept narrow: one rule, by id, and only
+// after reading it back from the named team — a stale or foreign id fails loud
+// instead of reaching `gitAutomationStateDelete`. Nothing else (the team, the
+// workflow state, a target branch) is ever deleted.
+
+const TEAM_GIT_AUTOMATION_STATES = gql`
+  query TeamGitAutomationStates($id: String!) {
+    team(id: $id) {
+      key
+      gitAutomationStates(first: 100) {
+        nodes {
+          id
+          event
+          state {
+            id
+            name
+          }
+          targetBranch {
+            branchPattern
+          }
+        }
+      }
+    }
+  }
+`;
+const GIT_AUTOMATION_STATE_DELETE = gql`
+  mutation GitAutomationStateDelete($id: String!) {
+    gitAutomationStateDelete(id: $id) {
+      success
+    }
+  }
+`;
+
+/** One git automation rule: on PR `event` (draft|start|review|mergeable|merge)
+ *  move the issue to `state` (null = "no action"); `targetBranch` is the branch
+ *  pattern the rule is scoped to, null for the team default. */
+export interface FlatGitAutomationState {
+  id: string;
+  event: string;
+  state: { id: string; name: string } | null;
+  targetBranch: string | null;
+}
+interface RawGitAutomationStates {
+  team: {
+    key: string;
+    gitAutomationStates: {
+      nodes: Array<{
+        id: string;
+        event: string;
+        state: { id: string; name: string } | null;
+        targetBranch: { branchPattern: string } | null;
+      }>;
+    };
+  } | null;
+}
+
+async function fetchGitAutomationStates(team: string): Promise<{ key: string; rows: FlatGitAutomationState[] }> {
+  const teamId = await resolveOneId(resolveTeamIds, "team", team);
+  const data = await gqlClient().request<RawGitAutomationStates>(TEAM_GIT_AUTOMATION_STATES, { id: teamId });
+  if (!data.team) throw new Error(`team not found: "${team}" (by id, key, or name)`);
+  return {
+    key: data.team.key,
+    rows: data.team.gitAutomationStates.nodes.map((g) => ({
+      id: g.id,
+      event: g.event,
+      state: g.state ? { id: g.state.id, name: g.state.name } : null,
+      targetBranch: g.targetBranch?.branchPattern ?? null,
+    })),
+  };
+}
+
+/** List a team's git automation rules → [{id, event, state, targetBranch}]. */
+export async function listGitAutomationStates(args: { team: string }): Promise<FlatGitAutomationState[]> {
+  return (await fetchGitAutomationStates(args.team)).rows;
+}
+
+/** The closed minimal ack `delete_git_automation_state` returns — what was removed. */
+export interface GitAutomationStateDeleteAck {
+  deleted: string;
+  team: string;
+  event: string;
+  state: string | null;
+}
+
+/**
+ * Delete exactly one git automation rule by `id`, which must belong to `team`
+ * (read back first). An id not on that team → loud throw listing the team's
+ * rules, and no mutation is sent.
+ */
+export async function deleteGitAutomationState(args: {
+  id: string;
+  team: string;
+}): Promise<GitAutomationStateDeleteAck> {
+  if (!args.id || !args.team) throw new Error("delete_git_automation_state requires `id` and `team`");
+  const { key, rows } = await fetchGitAutomationStates(args.team);
+  const hit = rows.find((r) => r.id === args.id);
+  if (!hit) {
+    throw new Error(
+      `no git automation state ${args.id} on team ${key}` +
+        (rows.length
+          ? ` — existing: ${rows.map((r) => `${r.id} (${r.event}→${r.state?.name ?? "no action"})`).join(", ")}`
+          : " — the team has no git automation states"),
+    );
+  }
+  const data = await gqlClient().request<{ gitAutomationStateDelete: { success: boolean } }>(
+    GIT_AUTOMATION_STATE_DELETE,
+    { id: hit.id },
+  );
+  if (!data.gitAutomationStateDelete.success) {
+    throw new Error(`gitAutomationStateDelete reported failure for ${hit.id} on team ${key}`);
+  }
+  return { deleted: hit.id, team: key, event: hit.event, state: hit.state?.name ?? null };
+}
+
 // --- cycles: list_cycles -----------------------------------------------------
 
 const CYCLES_QUERY = gql`

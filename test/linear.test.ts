@@ -1130,3 +1130,66 @@ describe("listInitiatives / getInitiative", () => {
     await expect(getInitiative("nope")).rejects.toThrow("initiative not found: nope");
   });
 });
+
+// --- git automation states --------------------------------------------------------
+
+describe("listGitAutomationStates / deleteGitAutomationState", () => {
+  const U_GAS = "aaaaaaaa-0000-4000-8000-000000000016";
+  const U_GAS2 = "aaaaaaaa-0000-4000-8000-000000000017";
+  const GAS = {
+    team: {
+      key: "LEAN",
+      gitAutomationStates: {
+        nodes: [
+          { id: U_GAS, event: "review", state: { id: U_STATE, name: "In Review" }, targetBranch: null },
+          { id: U_GAS2, event: "merge", state: null, targetBranch: { branchPattern: "release/*" } },
+        ],
+      },
+    },
+  };
+
+  it("list resolves the team key and returns closed flat rows", async () => {
+    respond(teamsPayload, GAS);
+    const { listGitAutomationStates } = await linear();
+    const rows = await listGitAutomationStates({ team: "LEAN" });
+    expect(recorded[1].query).toContain("gitAutomationStates(");
+    expect(recorded[1].variables).toEqual({ id: U_TEAM });
+    expect(rows).toEqual([
+      { id: U_GAS, event: "review", state: { id: U_STATE, name: "In Review" }, targetBranch: null },
+      { id: U_GAS2, event: "merge", state: null, targetBranch: "release/*" },
+    ]);
+  });
+
+  it("delete reads the rule back from the team, deletes only that id, acks what went", async () => {
+    respond(GAS, { gitAutomationStateDelete: { success: true } });
+    const { deleteGitAutomationState } = await linear();
+    const ack = await deleteGitAutomationState({ id: U_GAS, team: U_TEAM });
+    expect(recorded).toHaveLength(2);
+    expect(recorded[1].query).toContain("mutation GitAutomationStateDelete(");
+    expect(recorded[1].variables).toEqual({ id: U_GAS });
+    expect(ack).toEqual({ deleted: U_GAS, team: "LEAN", event: "review", state: "In Review" });
+  });
+
+  it("an id not on the team → loud throw listing the team's rules, NO mutation sent", async () => {
+    respond(GAS);
+    const { deleteGitAutomationState } = await linear();
+    await expect(deleteGitAutomationState({ id: U_ISSUE, team: U_TEAM })).rejects.toThrow(
+      /no git automation state .* on team LEAN — existing: .*review→In Review.*merge→no action/,
+    );
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0].query).not.toContain("mutation");
+  });
+
+  it("success:false from Linear surfaces as an error, never a false ack", async () => {
+    respond(GAS, { gitAutomationStateDelete: { success: false } });
+    const { deleteGitAutomationState } = await linear();
+    await expect(deleteGitAutomationState({ id: U_GAS, team: U_TEAM })).rejects.toThrow("reported failure");
+  });
+
+  it("unknown team → loud throw before any automation read", async () => {
+    respond(teamsPayload);
+    const { deleteGitAutomationState } = await linear();
+    await expect(deleteGitAutomationState({ id: U_GAS, team: "NOPE" })).rejects.toThrow('team not found: "NOPE"');
+    expect(recorded).toHaveLength(1);
+  });
+});

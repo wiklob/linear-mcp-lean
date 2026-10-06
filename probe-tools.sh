@@ -36,6 +36,7 @@ create_attachment
 create_attachment_from_upload
 create_issue_label
 create_issue_relation
+delete_git_automation_state
 extract_images
 get_attachment
 get_diff
@@ -53,6 +54,7 @@ list_comments
 list_cycles
 list_diffs
 list_documents
+list_git_automation_states
 list_issue_labels
 list_issue_statuses
 list_issues

@@ -148,14 +148,14 @@ For local experimentation, point at `http://localhost:8080/mcp` instead.
 
 ## Tools
 
-Same names and semantics as the hosted Linear MCP (40 tools total):
+Same names and semantics as the hosted Linear MCP (42 tools total):
 
 | Group | Tools |
 |-------|-------|
 | Issues | `get_issue`, `list_issues`, `save_issue`, `list_comments`, `save_comment`, `create_issue_relation` |
 | Projects | `get_project`, `list_projects`, `save_project`, `list_milestones`, `get_milestone`, `save_milestone` |
 | Teams & users | `get_team`, `list_teams`, `get_user`, `list_users` |
-| Labels & states | `list_issue_labels`, `list_project_labels`, `create_issue_label`, `list_issue_statuses`, `get_issue_status`, `list_cycles` |
+| Labels & states | `list_issue_labels`, `list_project_labels`, `create_issue_label`, `list_issue_statuses`, `get_issue_status`, `list_cycles`, `list_git_automation_states`, `delete_git_automation_state` |
 | Documents | `get_document`, `list_documents`, `save_document` |
 | Attachments | `get_attachment`, `create_attachment`, `prepare_attachment_upload`, `create_attachment_from_upload` |
 | Initiatives | `list_initiatives`, `get_initiative`, `save_initiative` |

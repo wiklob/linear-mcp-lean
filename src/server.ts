@@ -31,6 +31,8 @@ import {
   createIssueLabel,
   listIssueStatuses,
   getIssueStatus,
+  listGitAutomationStates,
+  deleteGitAutomationState,
   listCycles,
   getStatusUpdates,
   saveStatusUpdate,
@@ -462,6 +464,33 @@ export function buildServer(): McpServer {
       inputSchema: { id: z.string().describe("Workflow state id") },
     },
     async ({ id }) => jsonContent(await getIssueStatus(id)),
+  );
+
+  server.registerTool(
+    "list_git_automation_states",
+    {
+      title: "List git automation states",
+      description:
+        "List a team's git automation rules (move the issue to `state` when its PR hits `event`: draft|start|review|mergeable|merge) → [{id, event, state{id,name}|null, targetBranch}]. `targetBranch` is the branch pattern, null for the team default. The id source for delete_git_automation_state.",
+      inputSchema: { team: z.string().min(1).describe("Team key, name, or id") },
+    },
+    async (args) => jsonContent(await listGitAutomationStates(args)),
+  );
+
+  // V-674: a config deletion, kept narrow — one rule, by id, read back from the
+  // named team first. The sanctioned path that keeps raw mutations (V-36) off.
+  server.registerTool(
+    "delete_git_automation_state",
+    {
+      title: "Delete git automation state",
+      description:
+        "Delete exactly one git automation rule (the typed path for gitAutomationStateDelete — never enable raw mutations for this). `id` comes from list_git_automation_states and must belong to `team`; an id not on that team errors and lists the team's rules, deleting nothing. Only the rule is deleted — never the team or the workflow state. Returns {deleted, team, event, state}.",
+      inputSchema: {
+        id: z.string().min(1).describe("Git automation state id (from list_git_automation_states)"),
+        team: z.string().min(1).describe("Team key, name, or id the rule belongs to"),
+      },
+    },
+    async (args) => jsonContent(await deleteGitAutomationState(args)),
   );
 
   server.registerTool(
