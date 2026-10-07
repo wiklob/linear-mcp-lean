@@ -3,19 +3,18 @@
   "linearTeam": "linear-mcp-lean",
   "baseBranch": "main",
   "requiredCheck": "type-check",
-  "gate": "npx tsc --noEmit && npm test",
+  "gate": "npx tsc --noEmit && npx vitest run",
   "services": [
     {
-      "name": "server",
-      "covers": ["src/", "bin/gen-version.mjs", "package.json", "package-lock.json", "tsconfig.json", "bin/deploy.sh"],
+      "name": "wrapper",
+      "covers": ["src/", "bin/", "package.json", "package-lock.json", "tsconfig.json"],
       "deploy": "bin/deploy.sh",
-      "verify": "bin/check-deploy.sh"
+      "verify": "bin/deploy.sh --check"
     }
   ],
-  "servicesNote": "Landing deploys the server only: bin/deploy.sh builds locally, rsyncs dist/ (+ package files) to /opt/linear-mcp on the shared Hetzner box and restarts the linear-mcp unit. The systemd unit, Caddyfile and /etc/linear-mcp.env in deploy/ are still shipped by hand — deploy/README.md.",
-  "deployHealth": "bin/check-deploy.sh --live",
+  "servicesNote": "Landing deploys the wrapper only (dist/ + package files to /opt/linear-mcp, restart linear-mcp). The systemd unit and Caddyfile in deploy/ are still shipped by hand — deploy/README.md.",
   "automerge": {
     "maxLines": 400,
-    "deny": ["deploy/", ".github/", ".claude/", "bin/", "src/auth.ts", "src/proxy.ts", "auth", "package.json", "package-lock.json"]
+    "deny": ["deploy/", ".github/", ".claude/", "bin/deploy", "src/auth", "package.json", "package-lock.json"]
   }
 }
