@@ -10,6 +10,8 @@ import {
   listComments,
   saveIssue,
   saveComment,
+  createIssueRelation,
+  ISSUE_RELATION_TYPES,
   saveProject,
   saveMilestone,
   // long-tail GraphQL tools
@@ -29,6 +31,8 @@ import {
   createIssueLabel,
   listIssueStatuses,
   getIssueStatus,
+  listGitAutomationStates,
+  deleteGitAutomationState,
   listCycles,
   getStatusUpdates,
   saveStatusUpdate,
@@ -199,17 +203,39 @@ export function buildServer(): McpServer {
     async (args) => jsonContent(await saveComment(args)),
   );
 
+  // V-674: the typed, scoped relation create — the sanctioned path that keeps
+  // the raw-mutation guard (V-36) disabled by default.
+  server.registerTool(
+    "create_issue_relation",
+    {
+      title: "Create issue relation",
+      description:
+        "Create one relation between two issues (the typed path for issueRelationCreate — never enable raw mutations for this). `issue` and `related` take identifiers or ids; the relation reads `issue` —type→ `related` (blocks: issue blocks related; duplicate: issue is a duplicate of related). Idempotent: an identical existing relation is returned with created:false. Returns {id, type, issue, related, created}.",
+      inputSchema: {
+        issue: z.string().min(1).describe("Issue identifier or id the relation hangs off (the blocker / the duplicate)"),
+        related: z.string().min(1).describe("The other issue's identifier or id"),
+        type: z.enum(ISSUE_RELATION_TYPES).describe("Relation type: blocks | duplicate | related | similar"),
+      },
+    },
+    async (args) => jsonContent(await createIssueRelation(args)),
+  );
+
   server.registerTool(
     "save_project",
     {
       title: "Save project",
       description:
-        "Create (no `id`) or update (`id`) a project. Returns only {id, name, url, status}. Create requires `name` + `team`; `status` moves the project's lifecycle status (resolved by name, errors loudly on an unknown one); `addInitiatives` (names or ids) are attached after create.",
+        "Create (no `id`) or update (`id`) a project. Returns only {id, name, url, status}. Create requires `name` + `team`; `status` moves the project's lifecycle status (resolved by name, errors loudly on an unknown one); `labels` (project-label names or ids, resolved against list_project_labels; unknown names error loudly) REPLACES the project's labels — [] clears; `content` is the long markdown body, distinct from the short `description`; `addInitiatives` (names or ids) are attached after create.",
       inputSchema: {
         id: z.string().optional().describe("Project id to UPDATE; omit to create"),
         team: z.string().optional().describe("Team name or id (required on create)"),
         name: z.string().optional().describe("Project name (required on create)"),
-        description: z.string().optional().describe("Markdown body"),
+        description: z.string().optional().describe("Short summary line (Linear's project description)"),
+        content: z.string().optional().describe("Long markdown body (the project overview page)"),
+        labels: z
+          .array(z.string())
+          .optional()
+          .describe("Project label names or ids — replaces the current set; [] clears"),
         status: z
           .string()
           .optional()
@@ -438,6 +464,33 @@ export function buildServer(): McpServer {
       inputSchema: { id: z.string().describe("Workflow state id") },
     },
     async ({ id }) => jsonContent(await getIssueStatus(id)),
+  );
+
+  server.registerTool(
+    "list_git_automation_states",
+    {
+      title: "List git automation states",
+      description:
+        "List a team's git automation rules (move the issue to `state` when its PR hits `event`: draft|start|review|mergeable|merge) → [{id, event, state{id,name}|null, targetBranch}]. `targetBranch` is the branch pattern, null for the team default. The id source for delete_git_automation_state.",
+      inputSchema: { team: z.string().min(1).describe("Team key, name, or id") },
+    },
+    async (args) => jsonContent(await listGitAutomationStates(args)),
+  );
+
+  // V-674: a config deletion, kept narrow — one rule, by id, read back from the
+  // named team first. The sanctioned path that keeps raw mutations (V-36) off.
+  server.registerTool(
+    "delete_git_automation_state",
+    {
+      title: "Delete git automation state",
+      description:
+        "Delete exactly one git automation rule (the typed path for gitAutomationStateDelete — never enable raw mutations for this). `id` comes from list_git_automation_states and must belong to `team`; an id not on that team errors and lists the team's rules, deleting nothing. Only the rule is deleted — never the team or the workflow state. Returns {deleted, team, event, state}.",
+      inputSchema: {
+        id: z.string().min(1).describe("Git automation state id (from list_git_automation_states)"),
+        team: z.string().min(1).describe("Team key, name, or id the rule belongs to"),
+      },
+    },
+    async (args) => jsonContent(await deleteGitAutomationState(args)),
   );
 
   server.registerTool(

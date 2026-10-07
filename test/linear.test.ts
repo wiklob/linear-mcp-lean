@@ -524,6 +524,91 @@ describe("saveComment", () => {
   });
 });
 
+// --- create_issue_relation --------------------------------------------------------
+
+describe("createIssueRelation", () => {
+  const relations = (
+    out: Array<{ id: string; type: string; to: string }> = [],
+    inv: Array<{ id: string; type: string; from: string }> = [],
+  ) => ({
+    issue: {
+      id: U_ISSUE,
+      identifier: "LEAN-1",
+      relations: { nodes: out.map((r) => ({ id: r.id, type: r.type, relatedIssue: { id: r.to } })) },
+      inverseRelations: { nodes: inv.map((r) => ({ id: r.id, type: r.type, issue: { id: r.from } })) },
+    },
+  });
+
+  it("resolves both identifiers, creates the relation, returns the closed ack", async () => {
+    respond(
+      relations(),
+      { issue: { id: U_BLOCKER } }, // resolve LEAN-2 → UUID
+      { issueRelationCreate: { issueRelation: { id: "r1", type: "related" } } },
+    );
+    const { createIssueRelation } = await linear();
+    const ack = await createIssueRelation({ issue: "LEAN-1", related: "LEAN-2", type: "related" });
+    expect(recorded[0].variables).toEqual({ id: "LEAN-1" });
+    expect(recorded[2].query).toContain("issueRelationCreate(");
+    expect(recorded[2].variables).toEqual({
+      input: { issueId: U_ISSUE, relatedIssueId: U_BLOCKER, type: "related" },
+    });
+    expect(ack).toEqual({ id: "r1", type: "related", issue: "LEAN-1", related: "LEAN-2", created: true });
+  });
+
+  it("idempotent: an identical outgoing relation is returned, no mutation sent", async () => {
+    respond(relations([{ id: "r0", type: "duplicate", to: U_BLOCKER }]), { issue: { id: U_BLOCKER } });
+    const { createIssueRelation } = await linear();
+    const ack = await createIssueRelation({ issue: "LEAN-1", related: "LEAN-2", type: "duplicate" });
+    expect(recorded).toHaveLength(2);
+    expect(ack).toEqual({ id: "r0", type: "duplicate", issue: "LEAN-1", related: "LEAN-2", created: false });
+  });
+
+  it("symmetric types match the inverse direction too", async () => {
+    respond(relations([], [{ id: "r0", type: "similar", from: U_BLOCKER }]), { issue: { id: U_BLOCKER } });
+    const { createIssueRelation } = await linear();
+    const ack = await createIssueRelation({ issue: "LEAN-1", related: U_BLOCKER, type: "similar" });
+    expect(recorded).toHaveLength(1); // UUID `related` skips the lookup
+    expect(ack.created).toBe(false);
+  });
+
+  it("directional types do NOT treat the inverse as identical (B blocks A ≠ A blocks B)", async () => {
+    respond(
+      relations([{ id: "rx", type: "related", to: U_BLOCKER }], [{ id: "r0", type: "blocks", from: U_BLOCKER }]),
+      { issueRelationCreate: { issueRelation: { id: "r2", type: "blocks" } } },
+    );
+    const { createIssueRelation } = await linear();
+    const ack = await createIssueRelation({ issue: "LEAN-1", related: U_BLOCKER, type: "blocks" });
+    expect(recorded[1].variables).toEqual({
+      input: { issueId: U_ISSUE, relatedIssueId: U_BLOCKER, type: "blocks" },
+    });
+    expect(ack.created).toBe(true);
+  });
+
+  it("unknown type → loud throw naming the valid types, before any request", async () => {
+    const { createIssueRelation } = await linear();
+    await expect(createIssueRelation({ issue: "LEAN-1", related: "LEAN-2", type: "blockedBy" })).rejects.toThrow(
+      /unknown relation type "blockedBy".*blocks, duplicate, related, similar/,
+    );
+    expect(recorded).toHaveLength(0);
+  });
+
+  it("unknown issue → loud throw", async () => {
+    respond({ issue: null });
+    const { createIssueRelation } = await linear();
+    await expect(createIssueRelation({ issue: "LEAN-404", related: "LEAN-2", type: "related" })).rejects.toThrow(
+      "issue not found: LEAN-404",
+    );
+  });
+
+  it("self-relation → loud throw", async () => {
+    respond(relations());
+    const { createIssueRelation } = await linear();
+    await expect(createIssueRelation({ issue: "LEAN-1", related: U_ISSUE, type: "related" })).rejects.toThrow(
+      "cannot relate to itself",
+    );
+  });
+});
+
 // --- save_project -----------------------------------------------------------------
 
 describe("saveProject", () => {
@@ -605,6 +690,64 @@ describe("saveProject", () => {
     expect(recorded).toHaveLength(1);
     expect(recorded[0].variables).toEqual({ id: U_PROJECT, input: { name: "Renamed" } });
     expect(ack.status).toBe("Backlog");
+  });
+
+  const PROJECT_LABELS = {
+    projectLabels: {
+      nodes: [
+        { id: U_LABEL, name: "Infra", isGroup: false },
+        { id: U_STATE, name: "Area", isGroup: true },
+        { id: U_STATE2, name: "Growth", isGroup: false },
+      ],
+    },
+  };
+
+  it("labels resolve against PROJECT labels (case-insensitive), ids pass through; content is set", async () => {
+    respond(PROJECT_LABELS, updateAck("Backlog"));
+    const { saveProject } = await linear();
+    await saveProject({ id: U_PROJECT, labels: ["infra", U_MILESTONE], content: "# Overview\n\nlong body" });
+    expect(recorded[0].query).toContain("projectLabels(");
+    expect(recorded[0].query).not.toContain("issueLabels");
+    expect(recorded[1].variables).toEqual({
+      id: U_PROJECT,
+      input: { content: "# Overview\n\nlong body", labelIds: [U_LABEL, U_MILESTONE] },
+    });
+  });
+
+  it("all-UUID labels skip resolution; [] clears the set", async () => {
+    respond(updateAck("Backlog"), updateAck("Backlog"));
+    const { saveProject } = await linear();
+    await saveProject({ id: U_PROJECT, labels: [U_LABEL] });
+    await saveProject({ id: U_PROJECT, labels: [] });
+    expect(recorded).toHaveLength(2);
+    expect(recorded[0].variables).toEqual({ id: U_PROJECT, input: { labelIds: [U_LABEL] } });
+    expect(recorded[1].variables).toEqual({ id: U_PROJECT, input: { labelIds: [] } });
+  });
+
+  it("unknown project label → loud throw naming the workspace's labels, before any write", async () => {
+    respond(PROJECT_LABELS);
+    const { saveProject } = await linear();
+    await expect(saveProject({ id: U_PROJECT, labels: ["Nope"] })).rejects.toThrow(
+      /unresolved project label: "Nope".*has: Infra, Growth$/,
+    );
+    expect(recorded).toHaveLength(1);
+  });
+
+  it("a label GROUP name → loud throw", async () => {
+    respond(PROJECT_LABELS);
+    const { saveProject } = await linear();
+    await expect(saveProject({ id: U_PROJECT, labels: ["Area"] })).rejects.toThrow("is a label group");
+  });
+
+  it("create carries content + labelIds alongside name + teamIds", async () => {
+    respond(PROJECT_LABELS, teamsPayload, {
+      projectCreate: { project: { id: U_PROJECT, name: "New", url: "https://p", status: null } },
+    });
+    const { saveProject } = await linear();
+    await saveProject({ name: "New", team: "LEAN", labels: ["Growth"], content: "body" });
+    expect(recorded[2].variables).toEqual({
+      input: { name: "New", teamIds: [U_TEAM], content: "body", labelIds: [U_STATE2] },
+    });
   });
 });
 
@@ -985,5 +1128,68 @@ describe("listInitiatives / getInitiative", () => {
     respond({ initiative: null });
     const { getInitiative } = await linear();
     await expect(getInitiative("nope")).rejects.toThrow("initiative not found: nope");
+  });
+});
+
+// --- git automation states --------------------------------------------------------
+
+describe("listGitAutomationStates / deleteGitAutomationState", () => {
+  const U_GAS = "aaaaaaaa-0000-4000-8000-000000000016";
+  const U_GAS2 = "aaaaaaaa-0000-4000-8000-000000000017";
+  const GAS = {
+    team: {
+      key: "LEAN",
+      gitAutomationStates: {
+        nodes: [
+          { id: U_GAS, event: "review", state: { id: U_STATE, name: "In Review" }, targetBranch: null },
+          { id: U_GAS2, event: "merge", state: null, targetBranch: { branchPattern: "release/*" } },
+        ],
+      },
+    },
+  };
+
+  it("list resolves the team key and returns closed flat rows", async () => {
+    respond(teamsPayload, GAS);
+    const { listGitAutomationStates } = await linear();
+    const rows = await listGitAutomationStates({ team: "LEAN" });
+    expect(recorded[1].query).toContain("gitAutomationStates(");
+    expect(recorded[1].variables).toEqual({ id: U_TEAM });
+    expect(rows).toEqual([
+      { id: U_GAS, event: "review", state: { id: U_STATE, name: "In Review" }, targetBranch: null },
+      { id: U_GAS2, event: "merge", state: null, targetBranch: "release/*" },
+    ]);
+  });
+
+  it("delete reads the rule back from the team, deletes only that id, acks what went", async () => {
+    respond(GAS, { gitAutomationStateDelete: { success: true } });
+    const { deleteGitAutomationState } = await linear();
+    const ack = await deleteGitAutomationState({ id: U_GAS, team: U_TEAM });
+    expect(recorded).toHaveLength(2);
+    expect(recorded[1].query).toContain("mutation GitAutomationStateDelete(");
+    expect(recorded[1].variables).toEqual({ id: U_GAS });
+    expect(ack).toEqual({ deleted: U_GAS, team: "LEAN", event: "review", state: "In Review" });
+  });
+
+  it("an id not on the team → loud throw listing the team's rules, NO mutation sent", async () => {
+    respond(GAS);
+    const { deleteGitAutomationState } = await linear();
+    await expect(deleteGitAutomationState({ id: U_ISSUE, team: U_TEAM })).rejects.toThrow(
+      /no git automation state .* on team LEAN — existing: .*review→In Review.*merge→no action/,
+    );
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0].query).not.toContain("mutation");
+  });
+
+  it("success:false from Linear surfaces as an error, never a false ack", async () => {
+    respond(GAS, { gitAutomationStateDelete: { success: false } });
+    const { deleteGitAutomationState } = await linear();
+    await expect(deleteGitAutomationState({ id: U_GAS, team: U_TEAM })).rejects.toThrow("reported failure");
+  });
+
+  it("unknown team → loud throw before any automation read", async () => {
+    respond(teamsPayload);
+    const { deleteGitAutomationState } = await linear();
+    await expect(deleteGitAutomationState({ id: U_GAS, team: "NOPE" })).rejects.toThrow('team not found: "NOPE"');
+    expect(recorded).toHaveLength(1);
   });
 });
