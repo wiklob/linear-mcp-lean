@@ -1360,6 +1360,117 @@ export async function saveComment(args: SaveCommentArgs): Promise<CommentAck> {
   return { id: c.id, url: c.url };
 }
 
+// --- create_issue_relation (V-674) ------------------------------------------------
+// The typed, scoped path for `issueRelationCreate`. `save_issue.blockedBy` only
+// ever made `blocks`; every related / duplicate / similar link fell to
+// `linear_graphql`, whose mutations the V-36 guard disables. This tool creates
+// exactly one relation between two named issues — idempotently.
+
+/** Linear's `IssueRelationType` enum (verified by live introspection). */
+export const ISSUE_RELATION_TYPES = ["blocks", "duplicate", "related", "similar"] as const;
+/** Types with no direction: A related-to B is the same link as B related-to A. */
+const SYMMETRIC_RELATION_TYPES: ReadonlySet<string> = new Set(["related", "similar"]);
+
+const ISSUE_RELATIONS_QUERY = gql`
+  query IssueRelations($id: String!) {
+    issue(id: $id) {
+      id
+      identifier
+      relations(first: 250) {
+        nodes {
+          id
+          type
+          relatedIssue {
+            id
+          }
+        }
+      }
+      inverseRelations(first: 250) {
+        nodes {
+          id
+          type
+          issue {
+            id
+          }
+        }
+      }
+    }
+  }
+`;
+const ISSUE_RELATION_CREATE_ACK = gql`
+  mutation IssueRelationCreateAck($input: IssueRelationCreateInput!) {
+    issueRelationCreate(input: $input) {
+      issueRelation {
+        id
+        type
+      }
+    }
+  }
+`;
+
+export interface CreateIssueRelationArgs {
+  /** The issue the relation hangs off (identifier or id) — the blocker for
+   *  `blocks`, the duplicate for `duplicate`. */
+  issue: string;
+  /** The other issue (identifier or id). */
+  related: string;
+  /** blocks | duplicate | related | similar. */
+  type: string;
+}
+/** The closed minimal ack `create_issue_relation` returns. `created: false` →
+ *  an identical relation already existed and is returned untouched. */
+export interface IssueRelationAck {
+  id: string;
+  type: string;
+  issue: string;
+  related: string;
+  created: boolean;
+}
+
+/**
+ * Create one relation `issue —type→ related`, returning `{id, type, issue,
+ * related, created}`. Idempotent: an identical relation (same type, same
+ * direction — either direction for the symmetric `related`/`similar`) is
+ * returned with `created: false` instead of a duplicate being made.
+ */
+export async function createIssueRelation(args: CreateIssueRelationArgs): Promise<IssueRelationAck> {
+  if (!args.issue || !args.related) throw new Error("create_issue_relation requires `issue` and `related`");
+  if (!(ISSUE_RELATION_TYPES as readonly string[]).includes(args.type)) {
+    throw new Error(
+      `create_issue_relation: unknown relation type "${args.type}" — valid: ${ISSUE_RELATION_TYPES.join(", ")}`,
+    );
+  }
+  const data = await gqlClient().request<{
+    issue: {
+      id: string;
+      identifier: string;
+      relations: { nodes: Array<{ id: string; type: string; relatedIssue: { id: string } | null }> };
+      inverseRelations: { nodes: Array<{ id: string; type: string; issue: { id: string } | null }> };
+    } | null;
+  }>(ISSUE_RELATIONS_QUERY, { id: args.issue });
+  if (!data.issue) throw new Error(`issue not found: ${args.issue}`);
+  // Linear returns lowercase UUIDs; a passed-through uppercase id would miss the
+  // idempotency match and the self-relation guard.
+  const relatedId = (await resolveIssueUuid(args.related)).toLowerCase();
+  if (relatedId === data.issue.id.toLowerCase()) throw new Error("create_issue_relation: an issue cannot relate to itself");
+
+  const existing =
+    data.issue.relations.nodes.find((r) => r.type === args.type && r.relatedIssue?.id.toLowerCase() === relatedId) ??
+    (SYMMETRIC_RELATION_TYPES.has(args.type)
+      ? data.issue.inverseRelations.nodes.find((r) => r.type === args.type && r.issue?.id.toLowerCase() === relatedId)
+      : undefined);
+  if (existing) {
+    return { id: existing.id, type: existing.type, issue: data.issue.identifier, related: args.related, created: false };
+  }
+
+  const created = await gqlClient().request<{ issueRelationCreate: { issueRelation: { id: string; type: string } } }>(
+    ISSUE_RELATION_CREATE_ACK,
+    { input: { issueId: data.issue.id, relatedIssueId: relatedId, type: args.type } },
+  );
+  const r = created.issueRelationCreate.issueRelation;
+  return { id: r.id, type: r.type, issue: data.issue.identifier, related: args.related, created: true };
+}
+
 // --- save_project -----------------------------------------------------------------
 
 const PROJECT_CREATE = gql`
@@ -1439,6 +1550,56 @@ async function resolveProjectStatusId(value: string): Promise<string> {
   return hits[0].id;
 }
 
+// Project labels are a distinct entity from issue labels (resolveLabelIds would
+// match issueLabels — wrong here) and a workspace has a handful, so the name→id
+// resolution fetches them once per call and matches client-side, naming the
+// labels that DO exist on a miss.
+const PROJECT_LABELS_ALL = gql`
+  query ProjectLabelsAll($first: Int) {
+    projectLabels(first: $first) {
+      nodes {
+        id
+        name
+        isGroup
+      }
+    }
+  }
+`;
+
+/**
+ * Resolve project-label names-or-ids to ids. UUIDs pass through; a name matches
+ * case-insensitively. Zero matches → loud throw naming the workspace's project
+ * labels; >1 → "ambiguous"; a label GROUP → loud throw (Linear applies only
+ * leaf labels). Only fetches when at least one entry is a name.
+ */
+async function resolveProjectLabelIds(values: string[]): Promise<string[]> {
+  if (values.every(isId)) return values;
+  const data = await gqlClient().request<{
+    projectLabels: { nodes: Array<{ id: string; name: string; isGroup: boolean }> };
+  }>(PROJECT_LABELS_ALL, { first: 250 });
+  const all = data.projectLabels?.nodes ?? [];
+  return values.map((value) => {
+    if (isId(value)) return value;
+    const name = decodeHtmlEntities(value);
+    const hits = all.filter((l) => l.name.toLowerCase() === name.toLowerCase());
+    if (hits.length === 0) {
+      throw new Error(
+        `unresolved project label: "${name}" — no project label matched; this workspace has: ${all
+          .filter((l) => !l.isGroup)
+          .map((l) => l.name)
+          .join(", ")}`,
+      );
+    }
+    if (hits.length > 1) {
+      throw new Error(`ambiguous project label: "${name}" matched ${hits.length} — pass an id`);
+    }
+    if (hits[0].isGroup) {
+      throw new Error(`project label "${name}" is a label group — pass one of its labels`);
+    }
+    return hits[0].id;
+  });
+}
+
 /** The closed minimal ack `save_project` returns. `status` is the read-back of
  *  the project's lifecycle status after the write — the counterpart of
  *  `save_issue`'s `state`, and the only confirmation a status flip landed. */
@@ -1460,7 +1621,11 @@ export interface SaveProjectArgs {
   team?: string;
   name?: string;
   description?: string;
+  /** The long markdown body (Linear's `content`), distinct from the short
+   *  `description` summary line. */
   content?: string;
+  /** Project label names or ids — REPLACES the project's label set (`[]` clears). */
+  labels?: string[];
   status?: string;
   addInitiatives?: string[];
 }
@@ -1509,6 +1674,8 @@ export function projectTextInput(args: Pick<SaveProjectArgs, "description" | "co
  * status}`. Create requires a `team` (Linear's `projectCreate` requires
  * `teamIds`). `status` moves the project between lifecycle statuses
  * (Backlog / Planned / In Progress / Completed / Canceled) by name or id.
+ * `labels` (project-label names or ids) replaces the project's label set;
+ * `content` sets the long markdown body (`description` is the short summary).
  * Initiatives are NOT a create-input field — each `addInitiatives` entry is
  * attached with a separate `initiativeToProjectCreate` after the project exists.
  */
@@ -1516,10 +1683,12 @@ export async function saveProject(args: SaveProjectArgs): Promise<ProjectAck> {
   let project: RawProjectAck;
   const text = projectTextInput(args);
   const statusId = args.status ? await resolveProjectStatusId(args.status) : undefined;
+  const labelIds = args.labels ? await resolveProjectLabelIds(args.labels) : undefined;
   if (args.id) {
     const input: Record<string, unknown> = { ...text };
     if (args.name !== undefined) input.name = args.name;
     if (statusId !== undefined) input.statusId = statusId;
+    if (labelIds !== undefined) input.labelIds = labelIds;
     const data = await gqlClient().request<{ projectUpdate: { project: RawProjectAck } }>(
       PROJECT_UPDATE,
       { id: args.id, input },
@@ -1531,6 +1700,7 @@ export async function saveProject(args: SaveProjectArgs): Promise<ProjectAck> {
     const teamId = await resolveOneId(resolveTeamIds, "team", args.team);
     const input: Record<string, unknown> = { name: args.name, teamIds: [teamId], ...text };
     if (statusId !== undefined) input.statusId = statusId;
+    if (labelIds !== undefined) input.labelIds = labelIds;
     const data = await gqlClient().request<{ projectCreate: { project: RawProjectAck } }>(
       PROJECT_CREATE,
       { input },
@@ -2109,6 +2279,123 @@ export async function getIssueStatus(id: string): Promise<FlatState> {
   const s = data.workflowState;
   if (!s) throw new Error(`workflow state not found: ${id}`);
   return { id: s.id, name: s.name, type: s.type, color: s.color };
+}
+
+// --- git automations: list_git_automation_states / delete_git_automation_state (V-674)
+// A team's "move the issue to state X when its PR hits event Y" rules live in
+// `Team.gitAutomationStates` (the `Team.*WorkflowState` fields read null). The
+// delete is a config deletion, so it is kept narrow: one rule, by id, and only
+// after reading it back from the named team — a stale or foreign id fails loud
+// instead of reaching `gitAutomationStateDelete`. Nothing else (the team, the
+// workflow state, a target branch) is ever deleted.
+
+const TEAM_GIT_AUTOMATION_STATES = gql`
+  query TeamGitAutomationStates($id: String!) {
+    team(id: $id) {
+      key
+      gitAutomationStates(first: 100) {
+        nodes {
+          id
+          event
+          state {
+            id
+            name
+          }
+          targetBranch {
+            branchPattern
+          }
+        }
+      }
+    }
+  }
+`;
+const GIT_AUTOMATION_STATE_DELETE = gql`
+  mutation GitAutomationStateDelete($id: String!) {
+    gitAutomationStateDelete(id: $id) {
+      success
+    }
+  }
+`;
+
+/** One git automation rule: on PR `event` (draft|start|review|mergeable|merge)
+ *  move the issue to `state` (null = "no action"); `targetBranch` is the branch
+ *  pattern the rule is scoped to, null for the team default. */
+export interface FlatGitAutomationState {
+  id: string;
+  event: string;
+  state: { id: string; name: string } | null;
+  targetBranch: string | null;
+}
+interface RawGitAutomationStates {
+  team: {
+    key: string;
+    gitAutomationStates: {
+      nodes: Array<{
+        id: string;
+        event: string;
+        state: { id: string; name: string } | null;
+        targetBranch: { branchPattern: string } | null;
+      }>;
+    };
+  } | null;
+}
+
+async function fetchGitAutomationStates(team: string): Promise<{ key: string; rows: FlatGitAutomationState[] }> {
+  const teamId = await resolveOneId(resolveTeamIds, "team", team);
+  const data = await gqlClient().request<RawGitAutomationStates>(TEAM_GIT_AUTOMATION_STATES, { id: teamId });
+  if (!data.team) throw new Error(`team not found: "${team}" (by id, key, or name)`);
+  return {
+    key: data.team.key,
+    rows: data.team.gitAutomationStates.nodes.map((g) => ({
+      id: g.id,
+      event: g.event,
+      state: g.state ? { id: g.state.id, name: g.state.name } : null,
+      targetBranch: g.targetBranch?.branchPattern ?? null,
+    })),
+  };
+}
+
+/** List a team's git automation rules → [{id, event, state, targetBranch}]. */
+export async function listGitAutomationStates(args: { team: string }): Promise<FlatGitAutomationState[]> {
+  return (await fetchGitAutomationStates(args.team)).rows;
+}
+
+/** The closed minimal ack `delete_git_automation_state` returns — what was removed. */
+export interface GitAutomationStateDeleteAck {
+  deleted: string;
+  team: string;
+  event: string;
+  state: string | null;
+}
+
+/**
+ * Delete exactly one git automation rule by `id`, which must belong to `team`
+ * (read back first). An id not on that team → loud throw listing the team's
+ * rules, and no mutation is sent.
+ */
+export async function deleteGitAutomationState(args: {
+  id: string;
+  team: string;
+}): Promise<GitAutomationStateDeleteAck> {
+  if (!args.id || !args.team) throw new Error("delete_git_automation_state requires `id` and `team`");
+  const { key, rows } = await fetchGitAutomationStates(args.team);
+  const hit = rows.find((r) => r.id === args.id);
+  if (!hit) {
+    throw new Error(
+      `no git automation state ${args.id} on team ${key}` +
+        (rows.length
+          ? ` — existing: ${rows.map((r) => `${r.id} (${r.event}→${r.state?.name ?? "no action"})`).join(", ")}`
+          : " — the team has no git automation states"),
+    );
+  }
+  const data = await gqlClient().request<{ gitAutomationStateDelete: { success: boolean } }>(
+    GIT_AUTOMATION_STATE_DELETE,
+    { id: hit.id },
+  );
+  if (!data.gitAutomationStateDelete.success) {
+    throw new Error(`gitAutomationStateDelete reported failure for ${hit.id} on team ${key}`);
+  }
+  return { deleted: hit.id, team: key, event: hit.event, state: hit.state?.name ?? null };
 }
 
 // --- cycles: list_cycles -----------------------------------------------------

@@ -6,10 +6,10 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { expect, it } from "vitest";
 import { buildServer } from "../src/server.js";
 
-// The 39 tools promised by README.md — same names as the hosted Linear MCP.
+// The 42 tools promised by README.md — same names as the hosted Linear MCP.
 const EXPECTED_TOOLS = [
   // issues
-  "get_issue", "list_issues", "save_issue", "list_comments", "save_comment",
+  "get_issue", "list_issues", "save_issue", "list_comments", "save_comment", "create_issue_relation",
   // projects
   "get_project", "list_projects", "save_project", "list_milestones", "get_milestone", "save_milestone",
   // teams & users
@@ -17,6 +17,7 @@ const EXPECTED_TOOLS = [
   // labels & states
   "list_issue_labels", "list_project_labels", "create_issue_label",
   "list_issue_statuses", "get_issue_status", "list_cycles",
+  "list_git_automation_states", "delete_git_automation_state",
   // documents
   "get_document", "list_documents", "save_document",
   // attachments
@@ -38,7 +39,7 @@ it("buildServer registers exactly the promised drop-in tool set", async () => {
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
   const { tools } = await client.listTools();
   expect(new Set(tools.map((t) => t.name))).toEqual(new Set(EXPECTED_TOOLS));
-  expect(tools).toHaveLength(39);
+  expect(tools).toHaveLength(42);
   await client.close();
   await server.close();
 });
