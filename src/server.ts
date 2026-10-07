@@ -126,7 +126,7 @@ export function buildServer(): McpServer {
     "get_project",
     {
       title: "Get project",
-      description: "Get one project. Default → id, name, description, labels[name]; full:true adds status{name,type}, dates, lead, initiatives.",
+      description: "Get one project. Default → id, name, description, labels[name]; full:true adds content (markdown body), status{name,type}, dates, lead, initiatives.",
       inputSchema: {
         id: z.string().describe("Project id"),
         full: z.boolean().optional().describe("Return the richer documented superset instead of the lean default"),
@@ -225,13 +225,18 @@ export function buildServer(): McpServer {
     {
       title: "Save project",
       description:
-        "Create (no `id`) or update (`id`) a project. Returns only {id, name, url, status}. Create requires `name` + `team`; `status` moves the project's lifecycle status (resolved by name, errors loudly on an unknown one); `labels` (project-label names or ids, resolved against list_project_labels; unknown names error loudly) REPLACES the project's labels — [] clears; `content` is the long markdown body, distinct from the short `description`; `addInitiatives` (names or ids) are attached after create.",
+        "Create (no `id`) or update (`id`) a project. Returns only {id, name, url, status}. Create requires `name` + `team`; `status` moves the project's lifecycle status (resolved by name, errors loudly on an unknown one); `labels` (project-label names or ids, resolved against list_project_labels; unknown names error loudly) REPLACES the project's labels — [] clears; `content` is the long markdown body; `description` is Linear's ≤255-char summary line (a longer one sent without `content` becomes the body); `addInitiatives` (names or ids) are attached after create.",
       inputSchema: {
         id: z.string().optional().describe("Project id to UPDATE; omit to create"),
         team: z.string().optional().describe("Team name or id (required on create)"),
         name: z.string().optional().describe("Project name (required on create)"),
-        description: z.string().optional().describe("Short summary line (Linear's project description)"),
-        content: z.string().optional().describe("Long markdown body (the project overview page)"),
+        description: z
+          .string()
+          .optional()
+          .describe(
+            "Short one-line summary (≤255 chars). A longer value sent without `content` becomes the `content` body, its first line the summary",
+          ),
+        content: z.string().optional().describe("Markdown body (the project's full document)"),
         labels: z
           .array(z.string())
           .optional()

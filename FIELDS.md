@@ -45,7 +45,7 @@ If you need to page one of these, treat it as a gap to fix here — not a silent
 | `get_issue` | identifier, title, description, state, gitBranchName, project{id,name}, url, attachments[], blockedBy[], labels[], milestone{id,name}, priority, createdAt | updatedAt, startedAt, completedAt, canceledAt, dueDate, estimate, stateType, assigneeName, parent |
 | `list_issues` (per row) | identifier, title, state, statusType, priority, createdAt, blockedBy[], labels[], project{id}, projectMilestone{id}, gitBranchName | description, url, updatedAt, assigneeName, milestone{id,name} |
 | `list_projects` (per row) | id, name, status{name,type} | description, startDate, targetDate, leadName, labels[], initiatives[] |
-| `get_project` | id, name, description, labels[] | status{name,type}, startDate, targetDate, leadName, initiatives[] |
+| `get_project` | id, name, description, labels[] | content, status{name,type}, startDate, targetDate, leadName, initiatives[] |
 | `list_initiatives` (per row) | id, name, status, parentInitiative{name} | description, url, targetDate, startedAt, completedAt, ownerName, projects[] |
 | `get_initiative` | id, name, status, parentInitiative{name} | description, url, targetDate, startedAt, completedAt, ownerName, projects[] |
 

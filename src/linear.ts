@@ -876,13 +876,14 @@ const GET_PROJECT_QUERY = gql`
   }
 `;
 
-// `full: true` superset — adds status, lead, dates, initiatives.
+// `full: true` superset — adds the markdown body, status, lead, dates, initiatives.
 const GET_PROJECT_QUERY_FULL = gql`
   query GetProjectFull($id: String!) {
     project(id: $id) {
       id
       name
       description
+      content
       status {
         name
         type
@@ -915,6 +916,7 @@ export interface FlatProject {
 }
 /** The `full: true` superset single project. */
 export interface FlatProjectFull extends FlatProject {
+  content: string | null;
   status: { name: string; type: string } | null;
   startDate: string | null;
   targetDate: string | null;
@@ -926,6 +928,7 @@ interface RawProject {
   name: string;
   description: string | null;
   labels: { nodes: Array<{ name: string }> } | null;
+  content?: string | null;
   status?: { name: string; type: string } | null;
   startDate?: string | null;
   targetDate?: string | null;
@@ -949,6 +952,7 @@ export async function getProject(id: string, full = false): Promise<FlatProject 
   if (!full) return base;
   return {
     ...base,
+    content: p.content ?? null,
     status: p.status ? { name: p.status.name, type: p.status.type } : null,
     startDate: p.startDate ?? null,
     targetDate: p.targetDate ?? null,
@@ -1626,6 +1630,45 @@ export interface SaveProjectArgs {
   addInitiatives?: string[];
 }
 
+/** Linear's cap on a project's `description` — the short summary line. The
+ *  markdown body lives in `content`, which has no such cap. */
+export const PROJECT_DESCRIPTION_MAX = 255;
+
+/**
+ * Map `description`/`content` onto the project input. Callers habitually send
+ * the whole markdown body as `description`, which Linear rejects past 255
+ * chars — so with no `content`, an over-long `description` becomes the
+ * `content` and its first non-empty line (heading marks stripped, truncated)
+ * the summary. With an explicit `content`, an over-long `description` is the
+ * caller's mistake → a clear throw instead of Linear's validation envelope.
+ */
+export function projectTextInput(args: Pick<SaveProjectArgs, "description" | "content">): Record<string, string> {
+  const input: Record<string, string> = {};
+  if (args.content !== undefined) input.content = args.content;
+  if (args.description === undefined) return input;
+  if (args.description.length <= PROJECT_DESCRIPTION_MAX) {
+    input.description = args.description;
+    return input;
+  }
+  if (args.content !== undefined) {
+    throw new Error(
+      `save_project: \`description\` is ${args.description.length} chars; Linear caps it at ${PROJECT_DESCRIPTION_MAX} — put the body in \`content\` and keep \`description\` to a one-line summary`,
+    );
+  }
+  input.content = args.description;
+  const firstLine =
+    args.description
+      .split("\n")
+      .map((l) => l.replace(/^#+\s*/, "").trim())
+      .find((l) => l.length > 0) ?? "";
+  // Cut never leaves a lone high surrogate (a split emoji) before the ellipsis.
+  input.description =
+    firstLine.length <= PROJECT_DESCRIPTION_MAX
+      ? firstLine
+      : `${firstLine.slice(0, PROJECT_DESCRIPTION_MAX - 1).replace(/[\uD800-\uDBFF]$/, "")}…`;
+  return input;
+}
+
 /**
  * Create (no `id`) or update (`id`) a project, returning only `{id, name, url,
  * status}`. Create requires a `team` (Linear's `projectCreate` requires
@@ -1638,13 +1681,12 @@ export interface SaveProjectArgs {
  */
 export async function saveProject(args: SaveProjectArgs): Promise<ProjectAck> {
   let project: RawProjectAck;
+  const text = projectTextInput(args);
   const statusId = args.status ? await resolveProjectStatusId(args.status) : undefined;
   const labelIds = args.labels ? await resolveProjectLabelIds(args.labels) : undefined;
   if (args.id) {
-    const input: Record<string, unknown> = {};
+    const input: Record<string, unknown> = { ...text };
     if (args.name !== undefined) input.name = args.name;
-    if (args.description !== undefined) input.description = args.description;
-    if (args.content !== undefined) input.content = args.content;
     if (statusId !== undefined) input.statusId = statusId;
     if (labelIds !== undefined) input.labelIds = labelIds;
     const data = await gqlClient().request<{ projectUpdate: { project: RawProjectAck } }>(
@@ -1656,9 +1698,7 @@ export async function saveProject(args: SaveProjectArgs): Promise<ProjectAck> {
     if (!args.name) throw new Error("save_project create requires `name`");
     if (!args.team) throw new Error("save_project create requires `team`");
     const teamId = await resolveOneId(resolveTeamIds, "team", args.team);
-    const input: Record<string, unknown> = { name: args.name, teamIds: [teamId] };
-    if (args.description !== undefined) input.description = args.description;
-    if (args.content !== undefined) input.content = args.content;
+    const input: Record<string, unknown> = { name: args.name, teamIds: [teamId], ...text };
     if (statusId !== undefined) input.statusId = statusId;
     if (labelIds !== undefined) input.labelIds = labelIds;
     const data = await gqlClient().request<{ projectCreate: { project: RawProjectAck } }>(
