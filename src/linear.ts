@@ -2244,21 +2244,22 @@ export async function createIssueLabel(args: CreateIssueLabelArgs): Promise<Labe
 const WORKFLOW_STATES_QUERY = gql`
   query WorkflowStates($filter: WorkflowStateFilter, $first: Int) {
     workflowStates(filter: $filter, first: $first) {
-      nodes { id name type color }
+      nodes { id name type }
     }
   }
 `;
 const WORKFLOW_STATE_QUERY = gql`
   query WorkflowState($id: String!) {
-    workflowState(id: $id) { id name type color }
+    workflowState(id: $id) { id name type }
   }
 `;
 
+// No `color`: it is UI paint an agent never acts on, and it alone made this the
+// one read tool fatter than hosted (LEAN-1).
 export interface FlatState {
   id: string;
   name: string;
   type: string;
-  color: string;
 }
 
 /** List workflow states, optionally scoped to a `team` (name or id). */
@@ -2271,14 +2272,14 @@ export async function listIssueStatuses(args: { team?: string; limit?: number })
     filter,
     first: args.limit ?? 50,
   });
-  return data.workflowStates.nodes.map((s) => ({ id: s.id, name: s.name, type: s.type, color: s.color }));
+  return data.workflowStates.nodes.map((s) => ({ id: s.id, name: s.name, type: s.type }));
 }
 
 export async function getIssueStatus(id: string): Promise<FlatState> {
   const data = await gqlClient().request<{ workflowState: FlatState | null }>(WORKFLOW_STATE_QUERY, { id });
   const s = data.workflowState;
   if (!s) throw new Error(`workflow state not found: ${id}`);
-  return { id: s.id, name: s.name, type: s.type, color: s.color };
+  return { id: s.id, name: s.name, type: s.type };
 }
 
 // --- git automations: list_git_automation_states / delete_git_automation_state (V-674)
