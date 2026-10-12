@@ -64,6 +64,10 @@ Every tool that deletes something follows this, and so does any future one:
 
 The guard lives in `requireConfirm` in `src/linear.ts`; a new destructive tool calls it after its read-back.
 
+## Issue due date (`save_issue`)
+
+`dueDate` takes an ISO calendar date (`YYYY-MM-DD`) and sets the issue's due date; `null` clears it. Anything else — a timestamp, `2026-02-30` — fails before any request, so a create never half-applies. `get_issue({full: true})` reads it back as `dueDate`.
+
 ## Project labels and body (`save_project`)
 
 `labels` takes project-label names or ids (the `list_project_labels` set — project labels are a different entity from issue labels) and **replaces** the project's label set; `[]` clears it. An unknown name fails before the write and the error names the labels that exist; a label group is rejected. `content` is the project's long markdown body (its overview page), distinct from the short `description` summary.
