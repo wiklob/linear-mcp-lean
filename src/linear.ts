@@ -1471,6 +1471,134 @@ export async function createIssueRelation(args: CreateIssueRelationArgs): Promis
   return { id: r.id, type: r.type, issue: data.issue.identifier, related: args.related, created: true };
 }
 
+// --- list_issue_relations / delete_issue_relation (LEAN-2) -------------------------
+// The read path that makes a relation id discoverable, and the guarded delete.
+// Every row reads `issue —type→ related` (the create_issue_relation orientation),
+// whichever side of the relation the asked-about issue sits on.
+
+const ISSUE_RELATIONS_LIST = gql`
+  query IssueRelationsList($id: String!) {
+    issue(id: $id) {
+      identifier
+      relations(first: 250) {
+        nodes {
+          id
+          type
+          relatedIssue {
+            identifier
+          }
+        }
+      }
+      inverseRelations(first: 250) {
+        nodes {
+          id
+          type
+          issue {
+            identifier
+          }
+        }
+      }
+    }
+  }
+`;
+const ISSUE_RELATION_GET = gql`
+  query IssueRelationGet($id: String!) {
+    issueRelation(id: $id) {
+      id
+      type
+      issue {
+        identifier
+      }
+      relatedIssue {
+        identifier
+      }
+    }
+  }
+`;
+const ISSUE_RELATION_DELETE = gql`
+  mutation IssueRelationDelete($id: String!) {
+    issueRelationDelete(id: $id) {
+      success
+    }
+  }
+`;
+
+/** One relation, read `issue —type→ related` (identifiers). */
+export interface FlatIssueRelation {
+  id: string;
+  type: string;
+  issue: string;
+  related: string;
+}
+
+/** Every relation touching `issue`, both directions → [{id, type, issue, related}]. */
+export async function listIssueRelations(args: { issue: string }): Promise<FlatIssueRelation[]> {
+  if (!args.issue) throw new Error("list_issue_relations requires `issue`");
+  const data = await gqlClient().request<{
+    issue: {
+      identifier: string;
+      relations: { nodes: Array<{ id: string; type: string; relatedIssue: { identifier: string } | null }> };
+      inverseRelations: { nodes: Array<{ id: string; type: string; issue: { identifier: string } | null }> };
+    } | null;
+  }>(ISSUE_RELATIONS_LIST, { id: args.issue });
+  if (!data.issue) throw new Error(`issue not found: ${args.issue}`);
+  const self = data.issue.identifier;
+  // A relation whose other side was deleted/archived comes back null — skip it.
+  return [
+    ...data.issue.relations.nodes
+      .filter((r) => r.relatedIssue)
+      .map((r) => ({ id: r.id, type: r.type, issue: self, related: r.relatedIssue!.identifier })),
+    ...data.issue.inverseRelations.nodes
+      .filter((r) => r.issue)
+      .map((r) => ({ id: r.id, type: r.type, issue: r.issue!.identifier, related: self })),
+  ];
+}
+
+/** The closed minimal ack `delete_issue_relation` returns — what was removed. */
+export interface IssueRelationDeleteAck extends FlatIssueRelation {
+  deleted: true;
+}
+
+/**
+ * Delete exactly one issue relation by `id`, under the destructive-op guard:
+ * read back first (an unknown id fails loud and no mutation is sent), then
+ * `confirm: true` or a no-op error naming the relation. Only the link goes —
+ * never either issue.
+ */
+export async function deleteIssueRelation(args: { id: string; confirm?: boolean }): Promise<IssueRelationDeleteAck> {
+  if (!args.id) throw new Error("delete_issue_relation requires `id`");
+  let rel: {
+    id: string;
+    type: string;
+    issue: { identifier: string } | null;
+    relatedIssue: { identifier: string } | null;
+  } | null;
+  try {
+    rel = (await gqlClient().request<{ issueRelation: typeof rel }>(ISSUE_RELATION_GET, { id: args.id })).issueRelation;
+  } catch (e) {
+    // Linear answers an unknown id with an "Entity not found" GraphQL error.
+    if (/not found/i.test(String(e))) rel = null;
+    else throw e;
+  }
+  if (!rel) throw new Error(`issue relation not found: ${args.id} — list_issue_relations shows an issue's relation ids`);
+  requireConfirm(
+    "delete_issue_relation",
+    args.confirm,
+    `relation ${rel.issue?.identifier ?? "?"} —${rel.type}→ ${rel.relatedIssue?.identifier ?? "?"} (${rel.id})`,
+  );
+  const data = await gqlClient().request<{ issueRelationDelete: { success: boolean } }>(ISSUE_RELATION_DELETE, {
+    id: rel.id,
+  });
+  if (!data.issueRelationDelete.success) throw new Error(`issueRelationDelete reported failure for ${rel.id}`);
+  return {
+    id: rel.id,
+    type: rel.type,
+    issue: rel.issue?.identifier ?? "",
+    related: rel.relatedIssue?.identifier ?? "",
+    deleted: true,
+  };
+}
+
 // --- save_project -----------------------------------------------------------------
 
 const PROJECT_CREATE = gql`
@@ -1838,10 +1966,15 @@ export interface MilestoneDeleteAck {
  *  back first, then `confirm: true` or a no-op error naming the milestone. */
 export async function deleteMilestone(args: { id: string; confirm?: boolean }): Promise<MilestoneDeleteAck> {
   if (!args.id) throw new Error("delete_milestone requires `id`");
-  const data = await gqlClient().request<{
-    projectMilestone: { id: string; name: string; project: { name: string } | null } | null;
-  }>(MILESTONE_READBACK, { id: args.id });
-  const m = data.projectMilestone;
+  let m: { id: string; name: string; project: { name: string } | null } | null;
+  try {
+    m = (await gqlClient().request<{ projectMilestone: typeof m }>(MILESTONE_READBACK, { id: args.id }))
+      .projectMilestone;
+  } catch (e) {
+    // Linear answers an unknown id with an "Entity not found" GraphQL error.
+    if (/not found/i.test(String(e))) m = null;
+    else throw e;
+  }
   if (!m) throw new Error(`milestone not found: ${args.id}`);
   const where = m.project ? ` in project "${m.project.name}"` : "";
   requireConfirm("delete_milestone", args.confirm, `milestone "${m.name}" (${m.id})${where}`);

@@ -12,6 +12,8 @@ import {
   saveComment,
   createIssueRelation,
   ISSUE_RELATION_TYPES,
+  listIssueRelations,
+  deleteIssueRelation,
   saveProject,
   saveMilestone,
   deleteMilestone,
@@ -219,6 +221,32 @@ export function buildServer(): McpServer {
       },
     },
     async (args) => jsonContent(await createIssueRelation(args)),
+  );
+
+  // LEAN-2: the read path for relation ids, and the guarded typed delete.
+  server.registerTool(
+    "list_issue_relations",
+    {
+      title: "List issue relations",
+      description:
+        "List every relation touching an issue, both directions → [{id, type, issue, related}], each read `issue` —type→ `related` (identifiers), as create_issue_relation writes them. The id source for delete_issue_relation.",
+      inputSchema: { issue: z.string().min(1).describe("Issue identifier or id") },
+    },
+    async (args) => jsonContent(await listIssueRelations(args)),
+  );
+
+  server.registerTool(
+    "delete_issue_relation",
+    {
+      title: "Delete issue relation",
+      description:
+        "Delete exactly one issue relation (the typed path for issueRelationDelete — never enable raw mutations for this). Destructive: requires `confirm: true` — without it nothing is deleted and the error names the relation it would delete. `id` comes from list_issue_relations; an unknown id errors and deletes nothing. Only the link is deleted — never either issue. Returns {id, type, issue, related, deleted:true}.",
+      inputSchema: {
+        id: z.string().min(1).describe("Issue relation id (from list_issue_relations)"),
+        confirm: z.boolean().optional().describe("Must be true to actually delete; absent/false is a no-op that names the target"),
+      },
+    },
+    async (args) => jsonContent(await deleteIssueRelation(args)),
   );
 
   server.registerTool(
