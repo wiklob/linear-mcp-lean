@@ -262,6 +262,40 @@ describe("listIssues", () => {
     expect(recorded[1].variables.filter).toEqual({ team: { id: { eq: U_TEAM } } });
   });
 
+  it("milestone id narrows server-side without a resolution roundtrip", async () => {
+    respond(issuesPayload([]));
+    const { listIssues } = await linear();
+    await listIssues({ milestone: U_MILESTONE, includeCompleted: false });
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0].variables.filter).toEqual({
+      projectMilestone: { id: { eq: U_MILESTONE } },
+      state: { type: { nin: ["completed", "canceled", "duplicate"] } },
+    });
+  });
+
+  it("milestone name resolves within the given project", async () => {
+    respond(
+      { projects: { nodes: [{ id: U_PROJECT }] } }, // project filter
+      { projects: { nodes: [{ id: U_PROJECT }] } }, // listMilestones' project resolve
+      { project: { projectMilestones: { nodes: [{ id: U_MILESTONE, name: "M1" }] } } },
+      issuesPayload([]),
+    );
+    const { listIssues } = await linear();
+    await listIssues({ project: "Wrapper", milestone: "M1" });
+    expect(recorded[3].variables.filter).toEqual({
+      project: { id: { in: [U_PROJECT] } },
+      projectMilestone: { id: { eq: U_MILESTONE } },
+    });
+  });
+
+  it("milestone name without a project → loud throw, no query fired", async () => {
+    const { listIssues } = await linear();
+    await expect(listIssues({ milestone: "M1" })).rejects.toThrow(
+      'list_issues: milestone name "M1" needs a project',
+    );
+    expect(recorded).toHaveLength(0);
+  });
+
   it("full:true selects the full query and the richer row", async () => {
     respond(
       issuesPayload([

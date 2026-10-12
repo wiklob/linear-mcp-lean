@@ -88,7 +88,7 @@ export function buildServer(): McpServer {
     {
       title: "List issues",
       description:
-        "List issues as a {issues, hasNextPage, cursor} envelope. Lean rows by default (identifier, title, state, statusType, priority, createdAt, blockedBy, labels, project{id}, projectMilestone{id}, gitBranchName); full:true adds description, url, assignee, milestone name, updatedAt per row. `query` is a case-insensitive title/description text search (find an existing ticket without raw graphql). Page forward by passing the returned `cursor` back. Filter names (state/project/label/assignee/team) resolve server-side; an unresolved name errors loudly. Narrow server-side with `team` and `includeCompleted:false` (excludes completed/canceled/duplicate) to cut row count before it reaches you.",
+        "List issues as a {issues, hasNextPage, cursor} envelope. Lean rows by default (identifier, title, state, statusType, priority, createdAt, blockedBy, labels, project{id}, projectMilestone{id}, gitBranchName); full:true adds description, url, assignee, milestone name, updatedAt per row. `query` is a case-insensitive title/description text search (find an existing ticket without raw graphql). Page forward by passing the returned `cursor` back. Filter names (state/project/label/assignee/team) resolve server-side; an unresolved name errors loudly. Narrow server-side with `team` and `includeCompleted:false` (excludes completed/canceled/duplicate) to cut row count before it reaches you. `milestone` lists a milestone's issues (membership / last-open-in-milestone checks) without raw graphql.",
       inputSchema: {
         state: z.string().optional().describe("Workflow state name or id (e.g. In Progress)"),
         limit: z.number().int().positive().optional().describe("Max rows (default 50)"),
@@ -98,6 +98,7 @@ export function buildServer(): McpServer {
         query: z.string().optional().describe("Case-insensitive text search over title OR description (AND-ed with the other filters)"),
         team: z.string().optional().describe("Team name, key, or id — narrows to that team's issues server-side"),
         includeCompleted: z.boolean().optional().describe("Default true. false + no explicit state excludes completed/canceled/duplicate issues server-side"),
+        milestone: z.string().optional().describe("Project milestone id, or name together with project — narrows to that milestone's issues"),
         cursor: z.string().optional().describe("Next-page cursor from a prior response"),
         full: z.boolean().optional().describe("Return the richer documented per-row superset instead of the lean default"),
       },
