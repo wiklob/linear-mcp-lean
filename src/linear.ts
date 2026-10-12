@@ -1566,15 +1566,13 @@ export interface IssueRelationDeleteAck extends FlatIssueRelation {
 }
 
 /**
- * Delete exactly one issue relation by `id`. Destructive, so it demands
- * `confirm: true` and reads the relation back first: an unknown id fails loud
- * and no mutation is sent. Only the link goes — never either issue.
+ * Delete exactly one issue relation by `id`, under the destructive-op guard:
+ * read back first (an unknown id fails loud and no mutation is sent), then
+ * `confirm: true` or a no-op error naming the relation. Only the link goes —
+ * never either issue.
  */
-export async function deleteIssueRelation(args: { id: string; confirm: boolean }): Promise<IssueRelationDeleteAck> {
+export async function deleteIssueRelation(args: { id: string; confirm?: boolean }): Promise<IssueRelationDeleteAck> {
   if (!args.id) throw new Error("delete_issue_relation requires `id`");
-  if (args.confirm !== true) {
-    throw new Error("delete_issue_relation is destructive: pass `confirm: true` to delete the relation");
-  }
   let rel: {
     id: string;
     type: string;
@@ -1589,6 +1587,11 @@ export async function deleteIssueRelation(args: { id: string; confirm: boolean }
     else throw e;
   }
   if (!rel) throw new Error(`issue relation not found: ${args.id} — list_issue_relations shows an issue's relation ids`);
+  requireConfirm(
+    "delete_issue_relation",
+    args.confirm,
+    `relation ${rel.issue?.identifier ?? "?"} —${rel.type}→ ${rel.relatedIssue?.identifier ?? "?"} (${rel.id})`,
+  );
   const data = await gqlClient().request<{ issueRelationDelete: { success: boolean } }>(ISSUE_RELATION_DELETE, {
     id: rel.id,
   });
@@ -1918,6 +1921,76 @@ export async function saveMilestone(args: SaveMilestoneArgs): Promise<MilestoneA
     m = data.projectMilestoneCreate.projectMilestone;
   }
   return { id: m.id, name: m.name };
+}
+
+// --- destructive-op guard (LEAN-3) -------------------------------------------------
+// The standing convention for every `delete_*` tool this wrapper serves:
+//   1. Read the target back first — an unknown or foreign id fails loud before
+//      any mutation is built.
+//   2. Require `confirm: true`. Absent/false is a no-op error that names what
+//      the call WOULD have deleted, so the caller decides on facts, not an id.
+//   3. Only then send the delete mutation; `success: false` is an error, never
+//      a false ack. The ack is closed and minimal.
+// The harness half lives in ~/.claude/settings.json: `delete_*` tools sit in
+// `permissions.ask`, so they keep a permission prompt even though the rest of
+// `mcp__linear` is allowlisted. A new destructive tool follows both halves.
+
+/** Step 2 of the guard: throw (deleting nothing) unless `confirm` is exactly true. */
+function requireConfirm(tool: string, confirm: boolean | undefined, target: string): void {
+  if (confirm === true) return;
+  throw new Error(`${tool}: nothing deleted — this would delete ${target}. Re-run with confirm: true to delete it.`);
+}
+
+// --- delete_milestone -------------------------------------------------------------
+
+const MILESTONE_READBACK = gql`
+  query MilestoneReadback($id: String!) {
+    projectMilestone(id: $id) {
+      id
+      name
+      project {
+        name
+      }
+    }
+  }
+`;
+const MILESTONE_DELETE = gql`
+  mutation MilestoneDelete($id: String!) {
+    projectMilestoneDelete(id: $id) {
+      success
+    }
+  }
+`;
+
+/** The closed minimal ack `delete_milestone` returns. */
+export interface MilestoneDeleteAck {
+  id: string;
+  deleted: true;
+}
+
+/** Delete one project milestone by `id`, under the destructive-op guard: read
+ *  back first, then `confirm: true` or a no-op error naming the milestone. */
+export async function deleteMilestone(args: { id: string; confirm?: boolean }): Promise<MilestoneDeleteAck> {
+  if (!args.id) throw new Error("delete_milestone requires `id`");
+  let m: { id: string; name: string; project: { name: string } | null } | null;
+  try {
+    m = (await gqlClient().request<{ projectMilestone: typeof m }>(MILESTONE_READBACK, { id: args.id }))
+      .projectMilestone;
+  } catch (e) {
+    // Linear answers an unknown id with an "Entity not found" GraphQL error.
+    if (/not found/i.test(String(e))) m = null;
+    else throw e;
+  }
+  if (!m) throw new Error(`milestone not found: ${args.id}`);
+  const where = m.project ? ` in project "${m.project.name}"` : "";
+  requireConfirm("delete_milestone", args.confirm, `milestone "${m.name}" (${m.id})${where}`);
+  const del = await gqlClient().request<{ projectMilestoneDelete: { success: boolean } }>(MILESTONE_DELETE, {
+    id: m.id,
+  });
+  if (!del.projectMilestoneDelete.success) {
+    throw new Error(`projectMilestoneDelete reported failure for ${m.id}`);
+  }
+  return { id: m.id, deleted: true };
 }
 
 // =============================================================================
@@ -2503,11 +2576,13 @@ export interface GitAutomationStateDeleteAck {
 /**
  * Delete exactly one git automation rule by `id`, which must belong to `team`
  * (read back first). An id not on that team → loud throw listing the team's
- * rules, and no mutation is sent.
+ * rules, and no mutation is sent. Under the destructive-op guard: without
+ * `confirm: true` it names the rule it would delete and deletes nothing.
  */
 export async function deleteGitAutomationState(args: {
   id: string;
   team: string;
+  confirm?: boolean;
 }): Promise<GitAutomationStateDeleteAck> {
   if (!args.id || !args.team) throw new Error("delete_git_automation_state requires `id` and `team`");
   const { key, rows } = await fetchGitAutomationStates(args.team);
@@ -2520,6 +2595,11 @@ export async function deleteGitAutomationState(args: {
           : " — the team has no git automation states"),
     );
   }
+  requireConfirm(
+    "delete_git_automation_state",
+    args.confirm,
+    `git automation rule ${hit.id} on team ${key} (${hit.event}→${hit.state?.name ?? "no action"})`,
+  );
   const data = await gqlClient().request<{ gitAutomationStateDelete: { success: boolean } }>(
     GIT_AUTOMATION_STATE_DELETE,
     { id: hit.id },

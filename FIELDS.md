@@ -51,7 +51,18 @@ If you need to page one of these, treat it as a gap to fix here — not a silent
 | `list_initiatives` (per row) | id, name, status, parentInitiative{name} | description, url, targetDate, startedAt, completedAt, ownerName, projects[] |
 | `get_initiative` | id, name, status, parentInitiative{name} | description, url, targetDate, startedAt, completedAt, ownerName, projects[] |
 
-Write tools return minimal acks and nothing else: `save_issue` → `{id, identifier, state, url}`, `save_comment` → `{id, url}`, `create_issue_relation` → `{id, type, issue, related, created}` (idempotent: an identical existing relation comes back with `created: false`), `delete_issue_relation` → `{id, type, issue, related, deleted: true}` (one relation, by id, read back first; refuses without `confirm: true`), `save_project` → `{id, name, url, status}`, `save_milestone` → `{id, name}`, `save_initiative` → `{id, name, url, status}`, `delete_git_automation_state` → `{deleted, team, event, state}` (one rule, by id, read back from the named team first — an id not on that team deletes nothing). `list_issue_relations` → `[{id, type, issue, related}]` — every relation touching the issue, both directions, each read `issue —type→ related` by identifier. The long-tail read tools (`get_team`, `list_teams`, `get_user`, …) keep their closed shapes as documented in each tool's description.
+Write tools return minimal acks and nothing else: `save_issue` → `{id, identifier, state, url}`, `save_comment` → `{id, url}`, `create_issue_relation` → `{id, type, issue, related, created}` (idempotent: an identical existing relation comes back with `created: false`), `delete_issue_relation` → `{id, type, issue, related, deleted: true}` (one relation, by id, read back first; refuses without `confirm: true`), `save_project` → `{id, name, url, status}`, `save_milestone` → `{id, name}`, `save_initiative` → `{id, name, url, status}`, `delete_milestone` → `{id, deleted: true}`, `delete_git_automation_state` → `{deleted, team, event, state}` (one rule, by id, read back from the named team first — an id not on that team deletes nothing). `list_issue_relations` → `[{id, type, issue, related}]` — every relation touching the issue, both directions, each read `issue —type→ related` by identifier. Every delete follows the guard below. The long-tail read tools (`get_team`, `list_teams`, `get_user`, …) keep their closed shapes as documented in each tool's description.
+
+## Destructive ops (`delete_*`) — the standing guard
+
+Every tool that deletes something follows this, and so does any future one:
+
+1. **Read the target back first.** An unknown or foreign id fails loud before any mutation is built.
+2. **Require `confirm: true`.** Absent or `false` deletes nothing and errors with what the call *would* have deleted — e.g. `delete_milestone: nothing deleted — this would delete milestone "M1" (<id>) in project "Wrapper". Re-run with confirm: true to delete it.` The caller decides on the name, not on an opaque id.
+3. **Then delete, and ack minimally.** `success: false` from Linear is an error, never a false ack.
+4. **Keep the permission prompt.** In the harness, `delete_*` tools are listed under `permissions.ask` in `~/.claude/settings.json`, so they prompt even though reads and non-destructive `save_*` are allowlisted. A new `delete_*` tool is added to that `ask` list in the same change that ships it.
+
+The guard lives in `requireConfirm` in `src/linear.ts`; a new destructive tool calls it after its read-back.
 
 ## Project labels and body (`save_project`)
 

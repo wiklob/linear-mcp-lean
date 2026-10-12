@@ -16,6 +16,7 @@ import {
   deleteIssueRelation,
   saveProject,
   saveMilestone,
+  deleteMilestone,
   // long-tail GraphQL tools
   getTeam,
   listTeams,
@@ -240,10 +241,10 @@ export function buildServer(): McpServer {
     {
       title: "Delete issue relation",
       description:
-        "Delete exactly one issue relation (the typed path for issueRelationDelete — never enable raw mutations for this). Destructive: requires confirm:true. `id` comes from list_issue_relations; an unknown id errors and deletes nothing. Only the link is deleted — never either issue. Returns {id, type, issue, related, deleted:true}.",
+        "Delete exactly one issue relation (the typed path for issueRelationDelete — never enable raw mutations for this). Destructive: requires `confirm: true` — without it nothing is deleted and the error names the relation it would delete. `id` comes from list_issue_relations; an unknown id errors and deletes nothing. Only the link is deleted — never either issue. Returns {id, type, issue, related, deleted:true}.",
       inputSchema: {
         id: z.string().min(1).describe("Issue relation id (from list_issue_relations)"),
-        confirm: z.literal(true).describe("Must be true — acknowledges this deletes the relation"),
+        confirm: z.boolean().optional().describe("Must be true to actually delete; absent/false is a no-op that names the target"),
       },
     },
     async (args) => jsonContent(await deleteIssueRelation(args)),
@@ -294,6 +295,21 @@ export function buildServer(): McpServer {
       },
     },
     async (args) => jsonContent(await saveMilestone(args)),
+  );
+
+  // LEAN-3: destructive — under the delete_* guard (read back, then confirm).
+  server.registerTool(
+    "delete_milestone",
+    {
+      title: "Delete milestone",
+      description:
+        "Delete one project milestone (projectMilestoneDelete). Destructive: requires `confirm: true` — without it nothing is deleted and the error names the milestone and project it would delete, so read that and re-run with confirm. Issues on the milestone stay, they just lose it. Returns {id, deleted: true}.",
+      inputSchema: {
+        id: z.string().min(1).describe("Milestone id (from list_milestones)"),
+        confirm: z.boolean().optional().describe("Must be true to actually delete; absent/false is a no-op that names the target"),
+      },
+    },
+    async (args) => jsonContent(await deleteMilestone(args)),
   );
 
   // --- long-tail GraphQL tools ----------------------------------------------
@@ -518,10 +534,11 @@ export function buildServer(): McpServer {
     {
       title: "Delete git automation state",
       description:
-        "Delete exactly one git automation rule (the typed path for gitAutomationStateDelete — never enable raw mutations for this). `id` comes from list_git_automation_states and must belong to `team`; an id not on that team errors and lists the team's rules, deleting nothing. Only the rule is deleted — never the team or the workflow state. Returns {deleted, team, event, state}.",
+        "Delete exactly one git automation rule (the typed path for gitAutomationStateDelete — never enable raw mutations for this). `id` comes from list_git_automation_states and must belong to `team`; an id not on that team errors and lists the team's rules, deleting nothing. Only the rule is deleted — never the team or the workflow state. Destructive: requires `confirm: true` — without it nothing is deleted and the error names the rule it would delete. Returns {deleted, team, event, state}.",
       inputSchema: {
         id: z.string().min(1).describe("Git automation state id (from list_git_automation_states)"),
         team: z.string().min(1).describe("Team key, name, or id the rule belongs to"),
+        confirm: z.boolean().optional().describe("Must be true to actually delete; absent/false is a no-op that names the target"),
       },
     },
     async (args) => jsonContent(await deleteGitAutomationState(args)),

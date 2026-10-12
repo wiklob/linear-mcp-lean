@@ -39,6 +39,7 @@ create_issue_label
 create_issue_relation
 delete_git_automation_state
 delete_issue_relation
+delete_milestone
 extract_images
 get_attachment
 get_diff
@@ -57,6 +58,7 @@ list_comments
 list_cycles
 list_diffs
 list_documents
+list_initiatives
 list_git_automation_states
 list_initiatives
 list_issue_labels
