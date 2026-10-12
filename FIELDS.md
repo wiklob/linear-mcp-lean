@@ -98,7 +98,7 @@ Everything else works on any plan: create, update/rename, status, owner, target 
 
 ## `linear_graphql` escape hatch
 
-For the rare need neither the lean default nor `full` covers, `linear_graphql({query, variables})` runs an arbitrary GraphQL document against Linear and returns the **raw, untrimmed** result. Bearer-gated like every tool (the `/mcp` endpoint gate); errors surface, never swallowed. Mutations are refused unless the service sets `LINEAR_GRAPHQL_ALLOW_MUTATION=1` — every recurring write has a typed tool. See the README for a usage example.
+The last resort, in this order: a typed tool, then a sanctioned named op, then a raw query. Bearer-gated like every tool (the `/mcp` endpoint gate); errors surface, never swallowed.
 
 ### Typed first — want X → use Y
 
@@ -123,17 +123,26 @@ Most raw-GraphQL calls seen in real sessions were for things a typed tool alread
 | Due date, assignee, timestamps, parent, estimate (read) | `get_issue({id, full: true})` |
 | Due date (write) | `save_issue({id, dueDate: "YYYY-MM-DD"})` — `null` clears |
 
-### Sanctioned `linear_graphql` reads
+### Sanctioned named ops — `linear_graphql({op, variables})`
 
-What's left for the escape hatch — reads with no typed path today. Select only the fields you need (the result is untrimmed):
+What's left for the escape hatch — reads with no typed path today — runs as a **named op**: pass `op` + `variables` and no query. The server holds the canonical minimal query and returns a trimmed closed shape, so the caller neither sends a document nor receives raw bytes.
 
-- **Project comments** — `list_comments` is issue-only: `query($id:String!){ project(id:$id){ comments{ nodes{ id body createdAt user{ name } } } } }`
-- **A project's documents** — `list_documents` has no project filter: `query($id:String!){ project(id:$id){ documents{ nodes{ id title slugId updatedAt } } } }`
-- **Issue subscribers** — `query($id:String!){ issue(id:$id){ subscribers{ nodes{ name } } } }`
-- **Schema shape of an input or type** while debugging — `query{ __type(name:"ProjectUpdateInput"){ inputFields{ name type{ name kind } } } }`
-- **Any other one-off read** a typed tool doesn't select. If the same raw read keeps coming back, that's a missing typed tool or filter — file it rather than repeating the query.
+| `op` | variables | returns |
+|------|-----------|---------|
+| `project_comments` | `id` | `[{id, body, createdAt, user}]` — `list_comments` is issue-only |
+| `project_documents` | `id` | `[{id, title, slugId, updatedAt}]` — `list_documents` has no project filter |
+| `issue_subscribers` | `id` | `[name]` |
+| `issue_children` | `id` | `[{identifier, title, state}]` |
+| `issue_history` | `id` | `[{at, actor, fromState?, toState?, fromAssignee?, toAssignee?}]` — state/assignee changes, oldest first (from the latest 100 history entries) |
+| `type_shape` | `name` | `{name, kind, fields?, inputFields?, enumValues?}` — schema shape while debugging, each field as `"name: Type"`, e.g. `labelIds: [String!]` |
 
-Not on the list: mutations. A write with no typed tool is a ticket for one, not a reason to set `LINEAR_GRAPHQL_ALLOW_MUTATION`.
+An unknown op errors with the list; a missing variable errors before any request; an unknown issue or project is a loud not-found. If the same raw read keeps coming back, that's a missing named op, typed tool or filter — file it rather than repeating the query.
+
+### Raw `query` — genuine one-offs
+
+`linear_graphql({query, variables})` runs an arbitrary GraphQL document. The result is **null-stripped** (null object fields dropped at every depth; array slots kept) — Linear's raw payloads are dominated by null SLA/timestamp fields. Select only the fields you need.
+
+**Mutations** are rejected unless the call passes **`allowMutation: true`** *and* the service sets `LINEAR_GRAPHQL_ALLOW_MUTATION=1` (V-36 — a leaked bearer can't mutate through the server's key by passing a flag). An unparseable document counts as a mutation. Every recurring write has a typed tool; a write with no typed tool is a ticket for one, not a reason to set the flag.
 
 ## Byte budget (why lean-by-default is worth it)
 
