@@ -1466,3 +1466,157 @@ describe("listIssueStatuses / getIssueStatus (LEAN-1)", () => {
     await expect(getIssueStatus(U_STATE2)).rejects.toThrow("workflow state not found");
   });
 });
+
+// --- linear_graphql escape hatch ---------------------------------------------
+
+describe("linearGraphql", () => {
+  afterEach(() => {
+    delete process.env.LINEAR_GRAPHQL_ALLOW_MUTATION;
+  });
+
+  it("null-strips a raw query result (nested objects, not array slots)", async () => {
+    const { linearGraphql } = await linear();
+    respond({ issue: { identifier: "LEAN-1", dueDate: null, slaBreachesAt: null, labels: { nodes: [{ name: "a", color: null }] } } });
+    const out = await linearGraphql({ query: 'query { issue(id: "LEAN-1") { identifier } }' });
+    expect(out).toEqual({ issue: { identifier: "LEAN-1", labels: { nodes: [{ name: "a" }] } } });
+  });
+
+  it("rejects a mutation without allowMutation, before any request", async () => {
+    const { linearGraphql } = await linear();
+    process.env.LINEAR_GRAPHQL_ALLOW_MUTATION = "1";
+    await expect(linearGraphql({ query: 'mutation { issueDelete(id: "x") { success } }' })).rejects.toThrow(
+      /allowMutation: true/,
+    );
+    await expect(linearGraphql({ query: ',mutation { issueDelete(id: "x") { success } }' })).rejects.toThrow(
+      /allowMutation: true/,
+    );
+    await expect(linearGraphql({ query: "not graphql {" })).rejects.toThrow(/allowMutation: true/);
+    expect(recorded).toHaveLength(0);
+  });
+
+  it("still requires the service opt-in when allowMutation is passed", async () => {
+    const { linearGraphql } = await linear();
+    await expect(
+      linearGraphql({ query: 'mutation { issueDelete(id: "x") { success } }', allowMutation: true }),
+    ).rejects.toThrow(/LINEAR_GRAPHQL_ALLOW_MUTATION=1/);
+    expect(recorded).toHaveLength(0);
+  });
+
+  it("runs a mutation with allowMutation + the service opt-in", async () => {
+    const { linearGraphql } = await linear();
+    process.env.LINEAR_GRAPHQL_ALLOW_MUTATION = "1";
+    respond({ issueDelete: { success: true, lastSyncId: null } });
+    const out = await linearGraphql({ query: 'mutation { issueDelete(id: "x") { success } }', allowMutation: true });
+    expect(out).toEqual({ issueDelete: { success: true } });
+  });
+
+  it("needs exactly one of op / query", async () => {
+    const { linearGraphql } = await linear();
+    await expect(linearGraphql({})).rejects.toThrow(/exactly one/);
+    await expect(linearGraphql({ op: "issue_children", query: "query { viewer { id } }" })).rejects.toThrow(/exactly one/);
+  });
+
+  it("an unknown op errors and lists the sanctioned ops", async () => {
+    const { linearGraphql } = await linear();
+    await expect(linearGraphql({ op: "toString" })).rejects.toThrow(/unknown op "toString".*issue_subscribers/);
+    expect(recorded).toHaveLength(0);
+  });
+
+  it("a named op with a missing variable errors before any request", async () => {
+    const { linearGraphql } = await linear();
+    await expect(linearGraphql({ op: "issue_children" })).rejects.toThrow(/missing variables id/);
+    expect(recorded).toHaveLength(0);
+  });
+
+  it("issue_subscribers → names", async () => {
+    const { linearGraphql } = await linear();
+    respond({ issue: { subscribers: { nodes: [{ name: "Ana" }, { name: "Bo" }] } } });
+    expect(await linearGraphql({ op: "issue_subscribers", variables: { id: "LEAN-1" } })).toEqual(["Ana", "Bo"]);
+    expect(recorded[0].variables).toEqual({ id: "LEAN-1" });
+    expect(recorded[0].query).toMatch(/subscribers \{ nodes \{ name \} \}/);
+  });
+
+  it("a named op on a null issue is a loud not-found", async () => {
+    const { linearGraphql } = await linear();
+    respond({ issue: null });
+    await expect(linearGraphql({ op: "issue_children", variables: { id: "NOPE-1" } })).rejects.toThrow(
+      "linear_graphql issue_children: issue not found",
+    );
+  });
+
+  it("stripNulls keeps an aliased __proto__ key as a plain field", async () => {
+    const { stripNulls } = await linear();
+    const out = stripNulls(JSON.parse('{"__proto__": {"id": "u1", "x": null}}'));
+    expect(JSON.stringify(out)).toBe('{"__proto__":{"id":"u1"}}');
+  });
+
+  it("project_comments / project_documents → closed rows", async () => {
+    const { linearGraphql } = await linear();
+    respond(
+      { project: { comments: { nodes: [{ id: "c1", body: "hi", createdAt: "t1", user: null }] } } },
+      { project: { documents: { nodes: [{ id: "d1", title: "Spec", slugId: "s1", updatedAt: "t2" }] } } },
+      { project: null },
+    );
+    expect(await linearGraphql({ op: "project_comments", variables: { id: U_PROJECT } })).toEqual([
+      { id: "c1", body: "hi", createdAt: "t1" },
+    ]);
+    expect(await linearGraphql({ op: "project_documents", variables: { id: U_PROJECT } })).toEqual([
+      { id: "d1", title: "Spec", slugId: "s1", updatedAt: "t2" },
+    ]);
+    await expect(linearGraphql({ op: "project_documents", variables: { id: U_PROJECT2 } })).rejects.toThrow(
+      "project not found",
+    );
+  });
+
+  it("issue_children → closed rows", async () => {
+    const { linearGraphql } = await linear();
+    respond({ issue: { children: { nodes: [{ identifier: "LEAN-2", title: "Sub", state: { name: "Todo" } }] } } });
+    expect(await linearGraphql({ op: "issue_children", variables: { id: "LEAN-1" } })).toEqual([
+      { identifier: "LEAN-2", title: "Sub", state: "Todo" },
+    ]);
+  });
+
+  it("issue_history → state/assignee changes only, oldest first, nulls dropped", async () => {
+    const { linearGraphql } = await linear();
+    const none = { fromState: null, toState: null, fromAssignee: null, toAssignee: null };
+    respond({
+      issue: {
+        history: {
+          nodes: [
+            { ...none, createdAt: "t3", actor: { name: "Ana" }, fromState: { name: "Todo" }, toState: { name: "Done" } },
+            { ...none, createdAt: "t2", actor: null },
+            { ...none, createdAt: "t1", actor: { name: "Bo" }, toAssignee: { name: "Ana" } },
+          ],
+        },
+      },
+    });
+    expect(await linearGraphql({ op: "issue_history", variables: { id: "LEAN-1" } })).toEqual([
+      { at: "t1", actor: "Bo", toAssignee: "Ana" },
+      { at: "t3", actor: "Ana", fromState: "Todo", toState: "Done" },
+    ]);
+  });
+
+  it("type_shape renders field types and errors on an unknown type", async () => {
+    const { linearGraphql } = await linear();
+    const str = { kind: "SCALAR", name: "String", ofType: null };
+    respond({
+      __type: {
+        name: "IssueUpdateInput",
+        kind: "INPUT_OBJECT",
+        fields: null,
+        enumValues: null,
+        inputFields: [
+          { name: "title", type: str },
+          { name: "labelIds", type: { kind: "LIST", name: null, ofType: { kind: "NON_NULL", name: null, ofType: str } } },
+        ],
+      },
+    });
+    expect(await linearGraphql({ op: "type_shape", variables: { name: "IssueUpdateInput" } })).toEqual({
+      name: "IssueUpdateInput",
+      kind: "INPUT_OBJECT",
+      inputFields: ["title: String", "labelIds: [String!]"],
+    });
+    respond({ __type: null });
+    await expect(linearGraphql({ op: "type_shape", variables: { name: "Nope" } })).rejects.toThrow(/no such type/);
+  });
+});
