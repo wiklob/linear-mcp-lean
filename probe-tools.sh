@@ -9,7 +9,9 @@ cd "$(dirname "$0")"
 
 [ -f dist/index.js ] || { echo "FAIL: dist/index.js missing — run 'npm run build' first"; exit 2; }
 
-PORT="${PORT:-8767}"
+# A free port per run: two worktrees gating at once on a fixed port would probe
+# each other's server (same default token) and judge the wrong build.
+PORT="${PORT:-$(node -e 'const s=require("net").createServer().listen(0,"127.0.0.1",()=>{process.stdout.write(String(s.address().port));s.close()})')}"
 export PORT
 export MCP_BEARER_TOKEN="${MCP_BEARER_TOKEN:-probe-secret}"
 export LINEAR_API_KEY="${LINEAR_API_KEY:-dummy-not-used-by-tools-list}"
@@ -17,10 +19,13 @@ export LINEAR_API_KEY="${LINEAR_API_KEY:-dummy-not-used-by-tools-list}"
 node dist/index.js >/dev/null 2>&1 &
 SRV=$!
 trap 'kill "$SRV" 2>/dev/null || true' EXIT
+up=0
 for _ in $(seq 1 50); do
-  curl -fsS "http://127.0.0.1:$PORT/health" >/dev/null 2>&1 && break
+  kill -0 "$SRV" 2>/dev/null || { echo "FAIL: server exited on startup (port $PORT taken?)"; exit 2; }
+  curl -fsS "http://127.0.0.1:$PORT/health" >/dev/null 2>&1 && { up=1; break; }
   sleep 0.1
 done
+[ "$up" = 1 ] || { echo "FAIL: server never answered /health on port $PORT"; exit 2; }
 
 listing=$(curl -s -X POST "http://127.0.0.1:$PORT/mcp" \
   -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
