@@ -262,6 +262,40 @@ describe("listIssues", () => {
     expect(recorded[1].variables.filter).toEqual({ team: { id: { eq: U_TEAM } } });
   });
 
+  it("milestone id narrows server-side without a resolution roundtrip", async () => {
+    respond(issuesPayload([]));
+    const { listIssues } = await linear();
+    await listIssues({ milestone: U_MILESTONE, includeCompleted: false });
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0].variables.filter).toEqual({
+      projectMilestone: { id: { eq: U_MILESTONE } },
+      state: { type: { nin: ["completed", "canceled", "duplicate"] } },
+    });
+  });
+
+  it("milestone name resolves within the given project", async () => {
+    respond(
+      { projects: { nodes: [{ id: U_PROJECT }] } }, // project filter
+      { projects: { nodes: [{ id: U_PROJECT }] } }, // listMilestones' project resolve
+      { project: { projectMilestones: { nodes: [{ id: U_MILESTONE, name: "M1" }] } } },
+      issuesPayload([]),
+    );
+    const { listIssues } = await linear();
+    await listIssues({ project: "Wrapper", milestone: "M1" });
+    expect(recorded[3].variables.filter).toEqual({
+      project: { id: { in: [U_PROJECT] } },
+      projectMilestone: { id: { eq: U_MILESTONE } },
+    });
+  });
+
+  it("milestone name without a project → loud throw, no query fired", async () => {
+    const { listIssues } = await linear();
+    await expect(listIssues({ milestone: "M1" })).rejects.toThrow(
+      'list_issues: milestone name "M1" needs a project',
+    );
+    expect(recorded).toHaveLength(0);
+  });
+
   it("full:true selects the full query and the richer row", async () => {
     respond(
       issuesPayload([
@@ -1376,5 +1410,37 @@ describe("deleteMilestone", () => {
     respond(READBACK, { projectMilestoneDelete: { success: false } });
     const { deleteMilestone } = await linear();
     await expect(deleteMilestone({ id: U_MILESTONE, confirm: true })).rejects.toThrow("reported failure");
+  });
+});
+
+describe("listIssueStatuses / getIssueStatus (LEAN-1)", () => {
+  const RAW_STATES = {
+    workflowStates: {
+      nodes: [
+        { id: U_STATE, name: "Todo", type: "unstarted" },
+        { id: U_STATE2, name: "Done", type: "completed" },
+      ],
+    },
+  };
+
+  it("list: team-scoped, selects only id/name/type, closed rows with no color", async () => {
+    respond(teamsPayload, RAW_STATES);
+    const { listIssueStatuses } = await linear();
+    const rows = await listIssueStatuses({ team: "LEAN" });
+    expect(recorded[1].query).toMatch(/nodes \{ id name type \}/);
+    expect(recorded[1].query).not.toContain("color");
+    expect(recorded[1].variables).toEqual({ filter: { team: { id: { eq: U_TEAM } } }, first: 50 });
+    expect(rows).toEqual([
+      { id: U_STATE, name: "Todo", type: "unstarted" },
+      { id: U_STATE2, name: "Done", type: "completed" },
+    ]);
+  });
+
+  it("get: same closed shape, not found → loud throw", async () => {
+    respond({ workflowState: { id: U_STATE, name: "Todo", type: "unstarted" } }, { workflowState: null });
+    const { getIssueStatus } = await linear();
+    expect(await getIssueStatus(U_STATE)).toEqual({ id: U_STATE, name: "Todo", type: "unstarted" });
+    expect(recorded[0].query).not.toContain("color");
+    await expect(getIssueStatus(U_STATE2)).rejects.toThrow("workflow state not found");
   });
 });

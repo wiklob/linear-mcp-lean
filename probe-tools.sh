@@ -22,11 +22,12 @@ for _ in $(seq 1 50); do
   sleep 0.1
 done
 
-served=$(curl -s -X POST "http://127.0.0.1:$PORT/mcp" \
+listing=$(curl -s -X POST "http://127.0.0.1:$PORT/mcp" \
   -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
   -H "Authorization: Bearer $MCP_BEARER_TOKEN" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
-  | sed -n 's/^data: //p' \
+  | sed -n 's/^data: //p')
+served=$(printf '%s' "$listing" \
   | python3 -c 'import sys,json; d=json.load(sys.stdin); print("\n".join(sorted(t["name"] for t in d["result"]["tools"])))')
 
 # The promised surface: every tool name the hosted Linear MCP serves that this
@@ -59,6 +60,7 @@ list_diffs
 list_documents
 list_initiatives
 list_git_automation_states
+list_initiatives
 list_issue_labels
 list_issue_statuses
 list_issue_relations
@@ -89,6 +91,20 @@ if [ -n "$missing" ]; then
   exit 1
 fi
 echo "PASS: every expected tool name is served by the wrapper (impl or proxy)."
+
+# Typed args callers rely on instead of raw linear_graphql (tool.arg). A dropped
+# arg would push callers back to the escape hatch, so it fails here.
+missing_args=$(printf '%s' "$listing" | python3 -c '
+import sys, json
+want = ["list_issues.milestone", "list_issues.team", "list_issues.includeCompleted", "list_issues.query"]
+tools = {t["name"]: t.get("inputSchema", {}).get("properties", {}) for t in json.load(sys.stdin)["result"]["tools"]}
+print("\n".join(w for w in want if w.split(".")[1] not in tools.get(w.split(".")[0], {})))')
+if [ -n "$missing_args" ]; then
+  echo "FAIL: expected tool args NOT advertised:"
+  printf '%s\n' "$missing_args" | sed 's/^/  - /'
+  exit 1
+fi
+echo "PASS: typed filter args advertised (list_issues milestone/team/includeCompleted/query)."
 
 extra=$(comm -13 <(printf '%s\n' "$expected") <(printf '%s\n' "$served") || true)
 [ -n "$extra" ] && { echo "note: served beyond the expected list (update the list here):"; printf '%s\n' "$extra" | sed 's/^/  + /'; }
