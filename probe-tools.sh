@@ -32,7 +32,9 @@ served=$(printf '%s' "$listing" \
 
 # The promised surface: every tool name the hosted Linear MCP serves that this
 # server covers (impl or proxy), plus the linear_graphql escape hatch.
-expected=$(sort <<'EOF'
+# sort -u: two branches adding the same name merge cleanly into a duplicate,
+# which comm would then report as "NOT served".
+expected=$(sort -u <<'EOF'
 create_attachment
 create_attachment_from_upload
 create_issue_label
@@ -58,7 +60,6 @@ list_comments
 list_cycles
 list_diffs
 list_documents
-list_initiatives
 list_git_automation_states
 list_initiatives
 list_issue_labels
