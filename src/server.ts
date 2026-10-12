@@ -176,7 +176,7 @@ export function buildServer(): McpServer {
     {
       title: "Save issue",
       description:
-        "Create (no `id`) or update (`id`) an issue. Returns only {id, identifier, state, url} — no full-object echo. id-or-name args (state/assignee/project/milestone/labels) resolve server-side; `blockedBy` takes issue identifiers; create requires `title` + `team`.",
+        "Create (no `id`) or update (`id`) an issue. Returns only {id, identifier, state, url} — no full-object echo. id-or-name args (state/assignee/project/milestone/labels) resolve server-side; `blockedBy` takes issue identifiers; `dueDate` is ISO YYYY-MM-DD (null clears); create requires `title` + `team`.",
       inputSchema: {
         id: z.string().optional().describe("Issue id or identifier to UPDATE; omit to create"),
         title: z.string().optional().describe("Issue title (required on create)"),
@@ -189,6 +189,7 @@ export function buildServer(): McpServer {
         labels: z.array(z.string()).optional().describe("Label names or ids"),
         blockedBy: z.array(z.string()).optional().describe("Issue identifiers/ids that block this issue"),
         priority: z.number().int().min(0).max(4).optional().describe("0=None,1=Urgent,2=High,3=Medium,4=Low"),
+        dueDate: z.string().nullable().optional().describe("Due date, ISO YYYY-MM-DD; null clears it"),
       },
     },
     async (args) => jsonContent(await saveIssue(args)),
@@ -723,9 +724,9 @@ export function buildServer(): McpServer {
     {
       title: "Linear GraphQL (escape hatch)",
       description:
-        "Run an arbitrary GraphQL query or mutation against Linear's API (https://api.linear.app/graphql) and return the raw result. For the rare need neither the lean default nor full:true covers. Example: linear_graphql({query: \"query($id:String!){ issue(id:$id){ identifier subscribers{ nodes{ name } } } }\", variables: {id: \"ENG-123\"}}). Bearer-gated like every tool; errors surface, never swallowed.",
+        "Run an arbitrary GraphQL query against Linear's API (https://api.linear.app/graphql) and return the raw, untrimmed result. Last resort — use the typed tool when one exists: project status/description/labels → list_projects / get_project / save_project; workflow-state ids → list_issue_statuses (or just pass the state name to save_issue/list_issues); project status updates → get_status_updates; issue comments → list_comments; documents → list_documents / get_document; milestone's issues → list_issues({milestone}); text search → list_issues({query}); relations → create_issue_relation / list_issue_relations. Sanctioned raw reads: project comments, a project's documents, issue subscribers, __type introspection, other one-off reads (FIELDS.md). Mutations are refused unless the service enables them — every recurring write has a typed tool. Example: linear_graphql({query: \"query($id:String!){ issue(id:$id){ identifier subscribers{ nodes{ name } } } }\", variables: {id: \"ENG-123\"}}). Bearer-gated like every tool; errors surface, never swallowed.",
       inputSchema: {
-        query: z.string().describe("A GraphQL document (query or mutation)"),
+        query: z.string().describe("A GraphQL document (a query; mutations are refused unless the service enables them)"),
         variables: z.record(z.unknown()).optional().describe("Variables object for the document"),
       },
     },

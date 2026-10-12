@@ -547,6 +547,28 @@ describe("saveIssue", () => {
     });
   });
 
+  it("dueDate goes straight into issueUpdate; null clears it", async () => {
+    const UPDATE_ACK = {
+      issueUpdate: {
+        issue: { id: U_ISSUE, identifier: "LEAN-1", url: "https://linear.app/x/issue/LEAN-1", state: { name: "Todo" } },
+      },
+    };
+    respond(UPDATE_ACK, UPDATE_ACK);
+    const { saveIssue } = await linear();
+    await saveIssue({ id: "LEAN-1", dueDate: "2026-11-30" });
+    await saveIssue({ id: "LEAN-1", dueDate: null });
+    expect(recorded[0].variables).toEqual({ id: "LEAN-1", input: { dueDate: "2026-11-30" } });
+    expect(recorded[1].variables).toEqual({ id: "LEAN-1", input: { dueDate: null } });
+  });
+
+  it("a non-ISO or impossible dueDate fails before any request", async () => {
+    const { saveIssue } = await linear();
+    for (const bad of ["2026-02-30", "2026-13-45", "2026-11-30T10:00:00Z", "30/11/2026", ""]) {
+      await expect(saveIssue({ title: "t", team: U_TEAM, dueDate: bad })).rejects.toThrow("not an ISO date");
+    }
+    expect(recorded).toHaveLength(0);
+  });
+
   it("ambiguous project name on create → loud throw", async () => {
     respond(teamsPayload, { projects: { nodes: [{ id: U_PROJECT }, { id: U_PROJECT2 }] } });
     const { saveIssue } = await linear();

@@ -64,6 +64,10 @@ Every tool that deletes something follows this, and so does any future one:
 
 The guard lives in `requireConfirm` in `src/linear.ts`; a new destructive tool calls it after its read-back.
 
+## Issue due date (`save_issue`)
+
+`dueDate` takes an ISO calendar date (`YYYY-MM-DD`) and sets the issue's due date; `null` clears it. Anything else — a timestamp, `2026-02-30` — fails before any request, so a create never half-applies. `get_issue({full: true})` reads it back as `dueDate`.
+
 ## Project labels and body (`save_project`)
 
 `labels` takes project-label names or ids (the `list_project_labels` set — project labels are a different entity from issue labels) and **replaces** the project's label set; `[]` clears it. An unknown name fails before the write and the error names the labels that exist; a label group is rejected. `content` is the project's long markdown body (its overview page), distinct from the short `description` summary.
@@ -94,7 +98,42 @@ Everything else works on any plan: create, update/rename, status, owner, target 
 
 ## `linear_graphql` escape hatch
 
-For the rare need neither the lean default nor `full` covers, `linear_graphql({query, variables})` runs an arbitrary GraphQL document against Linear and returns the **raw, untrimmed** result. Bearer-gated like every tool (the `/mcp` endpoint gate); errors surface, never swallowed. See the README for a usage example.
+For the rare need neither the lean default nor `full` covers, `linear_graphql({query, variables})` runs an arbitrary GraphQL document against Linear and returns the **raw, untrimmed** result. Bearer-gated like every tool (the `/mcp` endpoint gate); errors surface, never swallowed. Mutations are refused unless the service sets `LINEAR_GRAPHQL_ALLOW_MUTATION=1` — every recurring write has a typed tool. See the README for a usage example.
+
+### Typed first — want X → use Y
+
+Most raw-GraphQL calls seen in real sessions were for things a typed tool already does, leaner. Check this map before reaching for `linear_graphql`:
+
+| Want | Typed tool |
+|---|---|
+| Project status (read) | `list_projects` (lean rows carry `status{name,type}`) or `get_project({id, full: true})` |
+| Project status (change) | `save_project({id, status: "In Progress"})` — status by name, resolved server-side |
+| Project description / body (read) | `get_project({id})` → `description`; `full: true` adds `content` (the markdown body) |
+| Project description / body (write) | `save_project({id, description})` (≤255-char summary) / `save_project({id, content})` (body) |
+| Project id from its name | `list_projects` — no name filter, so narrow with `team`/`state`/`label` (default limit 50); `get_project` takes an id, not a name |
+| Project labels (change) | `save_project({id, labels: [...]})` — replaces the set |
+| Workflow-state id | Usually unneeded: `save_issue({state: "Done"})` and `list_issues({state})` take the name. When you do need ids/types: `list_issue_statuses({team})` → `[{id, name, type}]`; one id → `get_issue_status({id})` |
+| Project status updates (read / post) | `get_status_updates({type: "project", project})` / `save_status_update({type: "project", project, body, health})` |
+| Issue comments (read / post) | `list_comments({issue})` / `save_comment({issue, body})` |
+| Documents (read / write) | `list_documents` → `get_document({id})` (which carries `project{id}`); `save_document({title, content, project})` |
+| Milestone's issues / membership | `list_issues({milestone, project})` |
+| Find an issue by text | `list_issues({query})` — title OR description |
+| Issue relations (duplicate / related / blocks) | `create_issue_relation` / `list_issue_relations` / `delete_issue_relation` |
+| Delete a milestone | `delete_milestone({id, confirm: true})` |
+| Due date, assignee, timestamps, parent, estimate (read) | `get_issue({id, full: true})` |
+| Due date (write) | `save_issue({id, dueDate: "YYYY-MM-DD"})` — `null` clears |
+
+### Sanctioned `linear_graphql` reads
+
+What's left for the escape hatch — reads with no typed path today. Select only the fields you need (the result is untrimmed):
+
+- **Project comments** — `list_comments` is issue-only: `query($id:String!){ project(id:$id){ comments{ nodes{ id body createdAt user{ name } } } } }`
+- **A project's documents** — `list_documents` has no project filter: `query($id:String!){ project(id:$id){ documents{ nodes{ id title slugId updatedAt } } } }`
+- **Issue subscribers** — `query($id:String!){ issue(id:$id){ subscribers{ nodes{ name } } } }`
+- **Schema shape of an input or type** while debugging — `query{ __type(name:"ProjectUpdateInput"){ inputFields{ name type{ name kind } } } }`
+- **Any other one-off read** a typed tool doesn't select. If the same raw read keeps coming back, that's a missing typed tool or filter — file it rather than repeating the query.
+
+Not on the list: mutations. A write with no typed tool is a ticket for one, not a reason to set `LINEAR_GRAPHQL_ALLOW_MUTATION`.
 
 ## Byte budget (why lean-by-default is worth it)
 
