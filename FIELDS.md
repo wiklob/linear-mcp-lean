@@ -121,6 +121,7 @@ Most raw-GraphQL calls seen in real sessions were for things a typed tool alread
 | Issue relations (duplicate / related / blocks) | `create_issue_relation` / `list_issue_relations` / `delete_issue_relation` |
 | Delete a milestone | `delete_milestone({id, confirm: true})` |
 | Due date, assignee, timestamps, parent, estimate (read) | `get_issue({id, full: true})` |
+| Due date (write) | `save_issue({id, dueDate: "YYYY-MM-DD"})` — `null` clears |
 
 ### Sanctioned `linear_graphql` reads
 
