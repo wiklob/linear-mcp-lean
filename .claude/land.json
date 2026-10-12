@@ -10,9 +10,14 @@
       "covers": ["src/", "bin/", "package.json", "package-lock.json", "tsconfig.json"],
       "deploy": "bin/deploy.sh",
       "verify": "bin/deploy.sh --check"
+    },
+    {
+      "name": "infra",
+      "covers": ["deploy/linear-mcp.service", "deploy/Caddyfile"],
+      "deploy": "bin/deploy.sh --check-infra"
     }
   ],
-  "servicesNote": "Landing deploys the wrapper only (dist/ + package files to /opt/linear-mcp, restart linear-mcp). The systemd unit and Caddyfile in deploy/ are still shipped by hand — deploy/README.md.",
+  "servicesNote": "Landing deploys the wrapper (dist/ + package files to /opt/linear-mcp, restart linear-mcp). The systemd unit and Caddyfile in deploy/ are still shipped by hand (deploy/README.md); a merge touching them runs `bin/deploy.sh --check-infra`, which fails the land until the box matches. bin/deploy.sh reads its target from LINEAR_MCP_DEPLOY_HOST in .envrc.",
   "automerge": {
     "maxLines": 400,
     "deny": ["deploy/", ".github/", ".claude/", "bin/deploy", "src/auth", "package.json", "package-lock.json"]

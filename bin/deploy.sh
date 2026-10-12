@@ -11,11 +11,16 @@
 # Usage:
 #   bin/deploy.sh                    # deploy HEAD (clean tree on main)
 #   bin/deploy.sh --check            # exit 0 iff the box runs HEAD and the unit is active
+#   bin/deploy.sh --check-infra      # exit 0 iff the box's unit + Caddyfile match deploy/ (LEAN-9)
 #   bin/deploy.sh --allow-dirty --allow-branch   # escape hatches, loud
+#
+# The target lives in the operator's .envrc, not here (the repo is public):
+#   export LINEAR_MCP_DEPLOY_HOST=root@<your box>
 #
 set -euo pipefail
 
-HOST="${LINEAR_MCP_DEPLOY_HOST:-root@178.104.140.96}"
+HOST="${LINEAR_MCP_DEPLOY_HOST:-}"
+[[ -n "$HOST" ]] || { echo "deploy: LINEAR_MCP_DEPLOY_HOST is unset — add 'export LINEAR_MCP_DEPLOY_HOST=root@<box>' to .envrc" >&2; exit 2; }
 REMOTE_DIR="/opt/linear-mcp"
 SERVICE="linear-mcp"
 # Same reasoning as cbapp's deploy scripts: walking every key in the agent trips
@@ -27,9 +32,11 @@ SSH_OPTS=(-o BatchMode=yes)
 ALLOW_DIRTY=0
 ALLOW_BRANCH=0
 CHECK_ONLY=0
+CHECK_INFRA=0
 for arg in "$@"; do
   case "$arg" in
     --check)        CHECK_ONLY=1 ;;
+    --check-infra)  CHECK_INFRA=1 ;;
     --allow-dirty)  ALLOW_DIRTY=1 ;;
     --allow-branch) ALLOW_BRANCH=1 ;;
     *) echo "deploy: unknown argument: $arg" >&2; exit 2 ;;
@@ -39,6 +46,29 @@ done
 cd "$(git rev-parse --show-toplevel)"
 head="$(git rev-parse HEAD)"
 remote() { ssh "${SSH_OPTS[@]}" "$HOST" "$@"; }
+
+# deploy/'s unit and Caddyfile are shipped by hand (deploy/README.md), so land can't
+# deploy them — but it runs this on every merge touching them, and a box that differs
+# fails the land loudly instead of sitting silently stale. Comments, blank lines,
+# Documentation= and the Caddy site address (the repo has a placeholder) don't count.
+if [[ $CHECK_INFRA = 1 ]]; then
+  norm() { sed -e 's/[[:space:]]*#.*$//' -e '/^[[:space:]]*$/d' -e '/^Documentation=/d' -e 's/^[^[:space:]]* {$/<site> {/'; }
+  drift=0
+  for pair in "linear-mcp.service:/etc/systemd/system/linear-mcp.service" "Caddyfile:/etc/caddy/Caddyfile"; do
+    local_file="deploy/${pair%%:*}" box_file="${pair#*:}"
+    box="$(remote "cat $box_file")" || { echo "deploy: cannot read $box_file on the box" >&2; exit 1; }
+    if ! diff <(printf '%s\n' "$box" | norm) <(norm < "$local_file") >&2; then
+      echo "deploy: $box_file on the box differs from $local_file (above: < box, > repo)" >&2
+      drift=1
+    fi
+  done
+  if [[ $drift = 1 ]]; then
+    echo "deploy: ship deploy/ by hand per deploy/README.md (Install steps 6–7), then re-run this check" >&2
+    exit 1
+  fi
+  echo "deploy: box unit + Caddyfile match deploy/"
+  exit 0
+fi
 
 running="$(remote "sed -n 's/^ *\"commit\": \"\\([0-9a-f]*\\)\".*/\\1/p' $REMOTE_DIR/dist/build-info.json" 2>/dev/null || true)"
 if [[ $CHECK_ONLY = 1 ]]; then
