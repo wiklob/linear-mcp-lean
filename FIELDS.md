@@ -20,6 +20,8 @@ To page: call `list_issues({project, …})`, then while `hasNextPage` is true, c
 
 `state` / `project` / `label` / `assignee` / `team` resolve names→ids server-side and AND together; `includeCompleted:false` (no explicit `state`) excludes completed/canceled/duplicate rows server-side. **`query`** is a case-insensitive text search matched over **title OR description**, AND-ed with the rest — e.g. `list_issues({project: "bugs", query: "deliverability"})` finds issues whose title/body mentions "deliverability", without needing the `linear_graphql` escape hatch.
 
+**`milestone`** lists a milestone's members (`filter.projectMilestone`): pass the milestone **id** (e.g. the `projectMilestone.id` off any row or `get_issue`), or its **name together with `project`** — a name without a project errors loudly, since milestone names repeat across projects. "Is this the last open issue in its milestone?" is `list_issues({milestone: <id>, includeCompleted: false})` — no raw `projectMilestone(id){issues}` query.
+
 ## Pagination coverage — which list tools page
 
 `list_issues` is the **only** paginated tool. The other list tools return small, filtered result sets consumed whole and keep their bare-array shape — adding an envelope to them would be unused bytes.

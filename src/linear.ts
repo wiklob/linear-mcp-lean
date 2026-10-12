@@ -653,6 +653,9 @@ export interface ListIssuesArgs {
   query?: string;
   team?: string;
   includeCompleted?: boolean;
+  /** Milestone id, or name + `project` — narrows to that milestone's issues
+   *  (`filter.projectMilestone`), replacing raw `projectMilestone(id){issues}`. */
+  milestone?: string;
   cursor?: string;
   full?: boolean;
 }
@@ -710,6 +713,8 @@ export async function listIssues(args: ListIssuesArgs): Promise<ListIssuesResult
     ];
   }
   if (args.team) filter.team = { id: { eq: (await getTeam(args.team)).id } };
+  if (args.milestone)
+    filter.projectMilestone = { id: { eq: await resolveMilestoneId(args.milestone, args.project, "list_issues") } };
   // includeCompleted defaults true (omit → no filter → unchanged). false + no explicit
   // state excludes terminal rows; an explicit `state` (which also writes filter.state) wins.
   if (args.includeCompleted === false && !args.state)
@@ -1234,18 +1239,19 @@ interface RawIssueAck {
 
 /** Resolve `milestone` (name or id) to a projectMilestone id. A name needs a
  *  project for context — reuse `listMilestones` (which carries the single-match
- *  project guard); a name without a project is a loud error. */
-async function resolveMilestoneId(args: SaveIssueArgs): Promise<string> {
-  const m = decodeHtmlEntities(args.milestone!);
+ *  project guard); a name without a project is a loud error. Shared by
+ *  save_issue and list_issues (`tool` prefixes the error). */
+async function resolveMilestoneId(milestone: string, project: string | undefined, tool: string): Promise<string> {
+  const m = decodeHtmlEntities(milestone);
   if (isId(m)) return m;
-  if (!args.project) {
+  if (!project) {
     throw new Error(
-      `save_issue: milestone name "${m}" needs a project to resolve — pass a milestone id, or include project`,
+      `${tool}: milestone name "${m}" needs a project to resolve — pass a milestone id, or include project`,
     );
   }
-  const list = await listMilestones(args.project);
+  const list = await listMilestones(project);
   const match = list.find((x) => x.name === m);
-  if (!match) throw new Error(`unresolved milestone name: "${m}" in project "${args.project}"`);
+  if (!match) throw new Error(`unresolved milestone name: "${m}" in project "${project}"`);
   return match.id;
 }
 
@@ -1289,7 +1295,7 @@ export async function saveIssue(args: SaveIssueArgs): Promise<IssueAck> {
       args.labels.map((l) => resolveOneId(resolveLabelIds, "label", l)),
     );
   }
-  if (args.milestone) input.projectMilestoneId = await resolveMilestoneId(args);
+  if (args.milestone) input.projectMilestoneId = await resolveMilestoneId(args.milestone, args.project, "save_issue");
 
   let issue: RawIssueAck;
   if (args.id) {
