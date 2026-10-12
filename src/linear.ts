@@ -1789,6 +1789,71 @@ export async function saveMilestone(args: SaveMilestoneArgs): Promise<MilestoneA
   return { id: m.id, name: m.name };
 }
 
+// --- destructive-op guard (LEAN-3) -------------------------------------------------
+// The standing convention for every `delete_*` tool this wrapper serves:
+//   1. Read the target back first — an unknown or foreign id fails loud before
+//      any mutation is built.
+//   2. Require `confirm: true`. Absent/false is a no-op error that names what
+//      the call WOULD have deleted, so the caller decides on facts, not an id.
+//   3. Only then send the delete mutation; `success: false` is an error, never
+//      a false ack. The ack is closed and minimal.
+// The harness half lives in ~/.claude/settings.json: `delete_*` tools sit in
+// `permissions.ask`, so they keep a permission prompt even though the rest of
+// `mcp__linear` is allowlisted. A new destructive tool follows both halves.
+
+/** Step 2 of the guard: throw (deleting nothing) unless `confirm` is exactly true. */
+function requireConfirm(tool: string, confirm: boolean | undefined, target: string): void {
+  if (confirm === true) return;
+  throw new Error(`${tool}: nothing deleted — this would delete ${target}. Re-run with confirm: true to delete it.`);
+}
+
+// --- delete_milestone -------------------------------------------------------------
+
+const MILESTONE_READBACK = gql`
+  query MilestoneReadback($id: String!) {
+    projectMilestone(id: $id) {
+      id
+      name
+      project {
+        name
+      }
+    }
+  }
+`;
+const MILESTONE_DELETE = gql`
+  mutation MilestoneDelete($id: String!) {
+    projectMilestoneDelete(id: $id) {
+      success
+    }
+  }
+`;
+
+/** The closed minimal ack `delete_milestone` returns. */
+export interface MilestoneDeleteAck {
+  id: string;
+  deleted: true;
+}
+
+/** Delete one project milestone by `id`, under the destructive-op guard: read
+ *  back first, then `confirm: true` or a no-op error naming the milestone. */
+export async function deleteMilestone(args: { id: string; confirm?: boolean }): Promise<MilestoneDeleteAck> {
+  if (!args.id) throw new Error("delete_milestone requires `id`");
+  const data = await gqlClient().request<{
+    projectMilestone: { id: string; name: string; project: { name: string } | null } | null;
+  }>(MILESTONE_READBACK, { id: args.id });
+  const m = data.projectMilestone;
+  if (!m) throw new Error(`milestone not found: ${args.id}`);
+  const where = m.project ? ` in project "${m.project.name}"` : "";
+  requireConfirm("delete_milestone", args.confirm, `milestone "${m.name}" (${m.id})${where}`);
+  const del = await gqlClient().request<{ projectMilestoneDelete: { success: boolean } }>(MILESTONE_DELETE, {
+    id: m.id,
+  });
+  if (!del.projectMilestoneDelete.success) {
+    throw new Error(`projectMilestoneDelete reported failure for ${m.id}`);
+  }
+  return { id: m.id, deleted: true };
+}
+
 // =============================================================================
 // LONG-TAIL TOOL COVERAGE
 // Each tool below maps to a real Linear PUBLIC GraphQL operation, verified
@@ -2371,11 +2436,13 @@ export interface GitAutomationStateDeleteAck {
 /**
  * Delete exactly one git automation rule by `id`, which must belong to `team`
  * (read back first). An id not on that team → loud throw listing the team's
- * rules, and no mutation is sent.
+ * rules, and no mutation is sent. Under the destructive-op guard: without
+ * `confirm: true` it names the rule it would delete and deletes nothing.
  */
 export async function deleteGitAutomationState(args: {
   id: string;
   team: string;
+  confirm?: boolean;
 }): Promise<GitAutomationStateDeleteAck> {
   if (!args.id || !args.team) throw new Error("delete_git_automation_state requires `id` and `team`");
   const { key, rows } = await fetchGitAutomationStates(args.team);
@@ -2388,6 +2455,11 @@ export async function deleteGitAutomationState(args: {
           : " — the team has no git automation states"),
     );
   }
+  requireConfirm(
+    "delete_git_automation_state",
+    args.confirm,
+    `git automation rule ${hit.id} on team ${key} (${hit.event}→${hit.state?.name ?? "no action"})`,
+  );
   const data = await gqlClient().request<{ gitAutomationStateDelete: { success: boolean } }>(
     GIT_AUTOMATION_STATE_DELETE,
     { id: hit.id },

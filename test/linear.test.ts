@@ -1221,7 +1221,7 @@ describe("listGitAutomationStates / deleteGitAutomationState", () => {
   it("delete reads the rule back from the team, deletes only that id, acks what went", async () => {
     respond(GAS, { gitAutomationStateDelete: { success: true } });
     const { deleteGitAutomationState } = await linear();
-    const ack = await deleteGitAutomationState({ id: U_GAS, team: U_TEAM });
+    const ack = await deleteGitAutomationState({ id: U_GAS, team: U_TEAM, confirm: true });
     expect(recorded).toHaveLength(2);
     expect(recorded[1].query).toContain("mutation GitAutomationStateDelete(");
     expect(recorded[1].variables).toEqual({ id: U_GAS });
@@ -1238,10 +1238,23 @@ describe("listGitAutomationStates / deleteGitAutomationState", () => {
     expect(recorded[0].query).not.toContain("mutation");
   });
 
+  it("no confirm:true → no-op error naming the rule it would delete, NO mutation sent", async () => {
+    for (const confirm of [undefined, false]) {
+      recorded = [];
+      respond(GAS);
+      const { deleteGitAutomationState } = await linear();
+      await expect(deleteGitAutomationState({ id: U_GAS, team: U_TEAM, confirm })).rejects.toThrow(
+        `delete_git_automation_state: nothing deleted — this would delete git automation rule ${U_GAS} on team LEAN (review→In Review)`,
+      );
+      expect(recorded).toHaveLength(1);
+      expect(recorded[0].query).not.toContain("mutation");
+    }
+  });
+
   it("success:false from Linear surfaces as an error, never a false ack", async () => {
     respond(GAS, { gitAutomationStateDelete: { success: false } });
     const { deleteGitAutomationState } = await linear();
-    await expect(deleteGitAutomationState({ id: U_GAS, team: U_TEAM })).rejects.toThrow("reported failure");
+    await expect(deleteGitAutomationState({ id: U_GAS, team: U_TEAM, confirm: true })).rejects.toThrow("reported failure");
   });
 
   it("unknown team → loud throw before any automation read", async () => {
@@ -1249,5 +1262,48 @@ describe("listGitAutomationStates / deleteGitAutomationState", () => {
     const { deleteGitAutomationState } = await linear();
     await expect(deleteGitAutomationState({ id: U_GAS, team: "NOPE" })).rejects.toThrow('team not found: "NOPE"');
     expect(recorded).toHaveLength(1);
+  });
+});
+
+// --- delete_milestone (LEAN-3: the destructive-op guard) --------------------------
+
+describe("deleteMilestone", () => {
+  const READBACK = { projectMilestone: { id: U_MILESTONE, name: "M1", project: { name: "Wrapper" } } };
+
+  it("confirm:true reads the milestone back, deletes only that id, acks {id, deleted:true}", async () => {
+    respond(READBACK, { projectMilestoneDelete: { success: true } });
+    const { deleteMilestone } = await linear();
+    const ack = await deleteMilestone({ id: U_MILESTONE, confirm: true });
+    expect(recorded).toHaveLength(2);
+    expect(recorded[0].query).toContain("projectMilestone(id: $id)");
+    expect(recorded[1].query).toContain("mutation MilestoneDelete(");
+    expect(recorded[1].variables).toEqual({ id: U_MILESTONE });
+    expect(ack).toEqual({ id: U_MILESTONE, deleted: true });
+  });
+
+  it("absent/false confirm → no-op error naming milestone + project, NO mutation sent", async () => {
+    for (const confirm of [undefined, false]) {
+      recorded = [];
+      respond(READBACK);
+      const { deleteMilestone } = await linear();
+      await expect(deleteMilestone({ id: U_MILESTONE, confirm })).rejects.toThrow(
+        `delete_milestone: nothing deleted — this would delete milestone "M1" (${U_MILESTONE}) in project "Wrapper". Re-run with confirm: true to delete it.`,
+      );
+      expect(recorded).toHaveLength(1);
+      expect(recorded[0].query).not.toContain("mutation");
+    }
+  });
+
+  it("unknown id → loud not-found before the confirm check, NO mutation sent", async () => {
+    respond({ projectMilestone: null });
+    const { deleteMilestone } = await linear();
+    await expect(deleteMilestone({ id: "nope", confirm: true })).rejects.toThrow("milestone not found: nope");
+    expect(recorded).toHaveLength(1);
+  });
+
+  it("success:false from Linear surfaces as an error, never a false ack", async () => {
+    respond(READBACK, { projectMilestoneDelete: { success: false } });
+    const { deleteMilestone } = await linear();
+    await expect(deleteMilestone({ id: U_MILESTONE, confirm: true })).rejects.toThrow("reported failure");
   });
 });
