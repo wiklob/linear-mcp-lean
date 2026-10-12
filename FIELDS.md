@@ -106,12 +106,12 @@ Most raw-GraphQL calls seen in real sessions were for things a typed tool alread
 | Project status (change) | `save_project({id, status: "In Progress"})` — status by name, resolved server-side |
 | Project description / body (read) | `get_project({id})` → `description`; `full: true` adds `content` (the markdown body) |
 | Project description / body (write) | `save_project({id, description})` (≤255-char summary) / `save_project({id, content})` (body) |
-| Project id from its name | `list_projects` (`get_project` takes an id, not a name) |
+| Project id from its name | `list_projects` — no name filter, so narrow with `team`/`state`/`label` (default limit 50); `get_project` takes an id, not a name |
 | Project labels (change) | `save_project({id, labels: [...]})` — replaces the set |
 | Workflow-state id | Usually unneeded: `save_issue({state: "Done"})` and `list_issues({state})` take the name. When you do need ids/types: `list_issue_statuses({team})` → `[{id, name, type}]`; one id → `get_issue_status({id})` |
 | Project status updates (read / post) | `get_status_updates({type: "project", project})` / `save_status_update({type: "project", project, body, health})` |
 | Issue comments (read / post) | `list_comments({issue})` / `save_comment({issue, body})` |
-| Documents (read / write) | `list_documents` → `get_document({id})` (`project{id}` on each); `save_document({title, content, project})` |
+| Documents (read / write) | `list_documents` → `get_document({id})` (which carries `project{id}`); `save_document({title, content, project})` |
 | Milestone's issues / membership | `list_issues({milestone, project})` |
 | Find an issue by text | `list_issues({query})` — title OR description |
 | Issue relations (duplicate / related / blocks) | `create_issue_relation` / `list_issue_relations` / `delete_issue_relation` |
