@@ -619,6 +619,70 @@ describe("createIssueRelation", () => {
   });
 });
 
+// --- list_issue_relations / delete_issue_relation ---------------------------------
+
+describe("listIssueRelations", () => {
+  it("returns both directions, each read issue —type→ related; skips a dangling side", async () => {
+    respond({
+      issue: {
+        identifier: "LEAN-1",
+        relations: {
+          nodes: [
+            { id: "r1", type: "duplicate", relatedIssue: { identifier: "LEAN-2" } },
+            { id: "rx", type: "related", relatedIssue: null },
+          ],
+        },
+        inverseRelations: { nodes: [{ id: "r2", type: "blocks", issue: { identifier: "LEAN-3" } }] },
+      },
+    });
+    const { listIssueRelations } = await linear();
+    const rows = await listIssueRelations({ issue: "LEAN-1" });
+    expect(recorded[0].variables).toEqual({ id: "LEAN-1" });
+    expect(rows).toEqual([
+      { id: "r1", type: "duplicate", issue: "LEAN-1", related: "LEAN-2" },
+      { id: "r2", type: "blocks", issue: "LEAN-3", related: "LEAN-1" },
+    ]);
+  });
+
+  it("unknown issue → loud throw", async () => {
+    respond({ issue: null });
+    const { listIssueRelations } = await linear();
+    await expect(listIssueRelations({ issue: "LEAN-404" })).rejects.toThrow("issue not found: LEAN-404");
+  });
+});
+
+describe("deleteIssueRelation", () => {
+  const REL = { id: "r1", type: "duplicate", issue: { identifier: "LEAN-1" }, relatedIssue: { identifier: "LEAN-2" } };
+
+  it("reads the relation back, deletes it, returns the closed ack", async () => {
+    respond({ issueRelation: REL }, { issueRelationDelete: { success: true } });
+    const { deleteIssueRelation } = await linear();
+    const ack = await deleteIssueRelation({ id: "r1", confirm: true });
+    expect(recorded[1].query).toContain("issueRelationDelete(");
+    expect(recorded[1].variables).toEqual({ id: "r1" });
+    expect(ack).toEqual({ id: "r1", type: "duplicate", issue: "LEAN-1", related: "LEAN-2", deleted: true });
+  });
+
+  it("without confirm:true → refuses before any request", async () => {
+    const { deleteIssueRelation } = await linear();
+    await expect(deleteIssueRelation({ id: "r1", confirm: false })).rejects.toThrow(/confirm: true/);
+    expect(recorded).toHaveLength(0);
+  });
+
+  it("unknown id → loud throw, no mutation sent", async () => {
+    respond({ issueRelation: null });
+    const { deleteIssueRelation } = await linear();
+    await expect(deleteIssueRelation({ id: "nope", confirm: true })).rejects.toThrow("issue relation not found: nope");
+    expect(recorded).toHaveLength(1);
+  });
+
+  it("success:false → loud throw", async () => {
+    respond({ issueRelation: REL }, { issueRelationDelete: { success: false } });
+    const { deleteIssueRelation } = await linear();
+    await expect(deleteIssueRelation({ id: "r1", confirm: true })).rejects.toThrow("reported failure for r1");
+  });
+});
+
 // --- save_project -----------------------------------------------------------------
 
 describe("saveProject", () => {
