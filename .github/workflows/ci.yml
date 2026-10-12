@@ -2,6 +2,8 @@ name: CI
 
 on:
   pull_request:
+  # Required checks must also run on the merge-queue's candidate commit.
+  merge_group:
   push:
     branches: [main]
 
