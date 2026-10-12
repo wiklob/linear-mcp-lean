@@ -37,11 +37,13 @@ create_attachment_from_upload
 create_issue_label
 create_issue_relation
 delete_git_automation_state
+delete_milestone
 extract_images
 get_attachment
 get_diff
 get_diff_threads
 get_document
+get_initiative
 get_issue
 get_issue_status
 get_milestone
@@ -54,6 +56,7 @@ list_comments
 list_cycles
 list_diffs
 list_documents
+list_initiatives
 list_git_automation_states
 list_issue_labels
 list_issue_statuses
@@ -66,6 +69,7 @@ list_users
 prepare_attachment_upload
 save_comment
 save_document
+save_initiative
 save_issue
 save_milestone
 save_project
