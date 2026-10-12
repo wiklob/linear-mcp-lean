@@ -60,7 +60,6 @@ list_diffs
 list_documents
 list_initiatives
 list_git_automation_states
-list_initiatives
 list_issue_labels
 list_issue_statuses
 list_issue_relations
@@ -96,7 +95,8 @@ echo "PASS: every expected tool name is served by the wrapper (impl or proxy)."
 # arg would push callers back to the escape hatch, so it fails here.
 missing_args=$(printf '%s' "$listing" | python3 -c '
 import sys, json
-want = ["list_issues.milestone", "list_issues.team", "list_issues.includeCompleted", "list_issues.query"]
+want = ["list_issues.milestone", "list_issues.team", "list_issues.includeCompleted", "list_issues.query",
+        "linear_graphql.op", "linear_graphql.allowMutation"]
 tools = {t["name"]: t.get("inputSchema", {}).get("properties", {}) for t in json.load(sys.stdin)["result"]["tools"]}
 print("\n".join(w for w in want if w.split(".")[1] not in tools.get(w.split(".")[0], {})))')
 if [ -n "$missing_args" ]; then
@@ -104,7 +104,7 @@ if [ -n "$missing_args" ]; then
   printf '%s\n' "$missing_args" | sed 's/^/  - /'
   exit 1
 fi
-echo "PASS: typed filter args advertised (list_issues milestone/team/includeCompleted/query)."
+echo "PASS: typed args advertised (list_issues milestone/team/includeCompleted/query; linear_graphql op/allowMutation)."
 
 extra=$(comm -13 <(printf '%s\n' "$expected") <(printf '%s\n' "$served") || true)
 [ -n "$extra" ] && { echo "note: served beyond the expected list (update the list here):"; printf '%s\n' "$extra" | sed 's/^/  + /'; }

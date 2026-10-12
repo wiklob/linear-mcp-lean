@@ -94,7 +94,24 @@ Everything else works on any plan: create, update/rename, status, owner, target 
 
 ## `linear_graphql` escape hatch
 
-For the rare need neither the lean default nor `full` covers, `linear_graphql({query, variables})` runs an arbitrary GraphQL document against Linear and returns the **raw, untrimmed** result. Bearer-gated like every tool (the `/mcp` endpoint gate); errors surface, never swallowed. See the README for a usage example.
+The last resort, in this order:
+
+1. **Typed tool first.** Most raw-GraphQL fallbacks seen in real use already had a typed home: project status/description → `save_project`; workflow-state ids → `list_issue_statuses`; project comments/updates/docs → `list_comments` / `get_status_updates` / `list_documents`; relations → `create_issue_relation` / `list_issue_relations`; milestone members → `list_issues({milestone})`; text search → `list_issues({query})`.
+2. **A sanctioned named op** — `linear_graphql({op, variables})`, no query. The server holds the canonical minimal query and returns a trimmed closed shape, so the caller neither sends a document nor receives raw bytes:
+
+   | `op` | variables | returns |
+   |------|-----------|---------|
+   | `issue_subscribers` | `id` | `[name]` |
+   | `issue_children` | `id` | `[{identifier, title, state}]` |
+   | `issue_history` | `id` | `[{at, actor, fromState?, toState?, fromAssignee?, toAssignee?}]` — state/assignee changes, oldest first (last 100 history entries) |
+   | `type_shape` | `name` | `{name, kind, fields?, inputFields?, enumValues?}` — each field as `"name: Type"`, e.g. `labelIds: [String!]` |
+
+   An unknown op errors with the list; a missing variable errors before any request. A read that recurs graduates to a typed tool; this registry holds reads only.
+3. **Raw `query`** for a genuine one-off. The result is **null-stripped** (null object fields dropped at every depth; array slots kept) — Linear's raw payloads are dominated by null SLA/timestamp fields.
+
+**Mutations** through the raw hatch are rejected unless the call passes **`allowMutation: true`** *and* the service sets `LINEAR_GRAPHQL_ALLOW_MUTATION=1` (V-36 — a leaked bearer can't mutate through the server's key by passing a flag). An unparseable document counts as a mutation. Every recurring write has a typed verb; the flag is for the one that doesn't.
+
+Bearer-gated like every tool (the `/mcp` endpoint gate); errors surface, never swallowed.
 
 ## Byte budget (why lean-by-default is worth it)
 
