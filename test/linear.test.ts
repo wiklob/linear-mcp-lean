@@ -1514,6 +1514,20 @@ describe("linearGraphql", () => {
     expect(recorded[0].query).toMatch(/subscribers \{ nodes \{ name \} \}/);
   });
 
+  it("a named op on a null issue is a loud not-found", async () => {
+    const { linearGraphql } = await linear();
+    respond({ issue: null });
+    await expect(linearGraphql({ op: "issue_children", variables: { id: "NOPE-1" } })).rejects.toThrow(
+      "linear_graphql issue_children: issue not found",
+    );
+  });
+
+  it("stripNulls keeps an aliased __proto__ key as a plain field", async () => {
+    const { stripNulls } = await linear();
+    const out = stripNulls(JSON.parse('{"__proto__": {"id": "u1", "x": null}}'));
+    expect(JSON.stringify(out)).toBe('{"__proto__":{"id":"u1"}}');
+  });
+
   it("issue_children → closed rows", async () => {
     const { linearGraphql } = await linear();
     respond({ issue: { children: { nodes: [{ identifier: "LEAN-2", title: "Sub", state: { name: "Todo" } }] } } });

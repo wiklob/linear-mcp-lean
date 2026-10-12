@@ -84,7 +84,9 @@ export function stripNulls(value: unknown): unknown {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value)) {
       if (v === null || v === undefined) continue;
-      out[k] = stripNulls(v);
+      // defineProperty, not `out[k] =`: an aliased `__proto__` key would set
+      // out's prototype and vanish from the JSON instead of being copied.
+      Object.defineProperty(out, k, { value: stripNulls(v), enumerable: true, writable: true, configurable: true });
     }
     return out;
   }
@@ -104,6 +106,12 @@ interface NamedOp {
 type Named = { name: string } | null | undefined;
 const nameOf = (n: Named) => n?.name;
 
+/** The issue off a named op's response; a null issue is a loud not-found. */
+function issueOf(op: string, d: { issue: any }): any {
+  if (!d.issue) throw new Error(`linear_graphql ${op}: issue not found`);
+  return d.issue;
+}
+
 // The sanctioned long-tail reads: genuine gaps too rare for a typed tool
 // (research §3 — "documented snippet" tier), held here as canonical minimal
 // queries instead of a doc the caller copies from. A recurring read graduates to
@@ -113,14 +121,14 @@ export const NAMED_OPS: Record<string, NamedOp> = {
     summary: "issue_subscribers {id} → [name] — who is subscribed to an issue",
     required: ["id"],
     query: `query IssueSubscribers($id: String!) { issue(id: $id) { subscribers { nodes { name } } } }`,
-    shape: (d) => d.issue.subscribers.nodes.map((u: { name: string }) => u.name),
+    shape: (d) => issueOf("issue_subscribers", d).subscribers.nodes.map((u: { name: string }) => u.name),
   },
   issue_children: {
     summary: "issue_children {id} → [{identifier, title, state}] — an issue's sub-issues",
     required: ["id"],
     query: `query IssueChildren($id: String!) { issue(id: $id) { children { nodes { identifier title state { name } } } } }`,
     shape: (d) =>
-      d.issue.children.nodes.map((c: { identifier: string; title: string; state: Named }) => ({
+      issueOf("issue_children", d).children.nodes.map((c: { identifier: string; title: string; state: Named }) => ({
         identifier: c.identifier,
         title: c.title,
         state: nameOf(c.state),
@@ -128,11 +136,13 @@ export const NAMED_OPS: Record<string, NamedOp> = {
   },
   issue_history: {
     summary:
-      "issue_history {id} → [{at, actor, fromState, toState, fromAssignee, toAssignee}] — an issue's state/assignee changes, oldest first",
+      "issue_history {id} → [{at, actor, fromState, toState, fromAssignee, toAssignee}] — an issue's state/assignee changes, oldest first (from its latest 100 history entries)",
     required: ["id"],
-    query: `query IssueHistory($id: String!) { issue(id: $id) { history(first: 100) { nodes { createdAt actor { name } fromState { name } toState { name } fromAssignee { name } toAssignee { name } } } } }`,
+    query: `query IssueHistory($id: String!) { issue(id: $id) { history(first: 100, orderBy: createdAt) { nodes { createdAt actor { name } fromState { name } toState { name } fromAssignee { name } toAssignee { name } } } } }`,
+    // Sorted here rather than trusting Linear's page order.
     shape: (d) =>
-      d.issue.history.nodes
+      [...issueOf("issue_history", d).history.nodes]
+        .sort((a: any, b: any) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0))
         .filter((h: any) => h.toState || h.toAssignee || h.fromAssignee)
         .map((h: any) =>
           stripNulls({
@@ -143,20 +153,20 @@ export const NAMED_OPS: Record<string, NamedOp> = {
             fromAssignee: nameOf(h.fromAssignee),
             toAssignee: nameOf(h.toAssignee),
           }),
-        )
-        .reverse(),
+        ),
   },
   type_shape: {
     summary:
       "type_shape {name} → {name, kind, fields?, inputFields?, enumValues?} — a GraphQL type's arg/field shape (e.g. IssueUpdateInput), each field as \"name: Type\"",
     required: ["name"],
     query: `query TypeShape($name: String!) { __type(name: $name) { name kind fields { name type { ...T } } inputFields { name type { ...T } } enumValues { name } } }
-fragment T on __Type { kind name ofType { kind name ofType { kind name ofType { kind name } } } }`,
+fragment T on __Type { kind name ofType { kind name ofType { kind name ofType { kind name ofType { kind name } } } } }`,
     shape: (d) => {
       const t = d.__type;
       if (!t) throw new Error("linear_graphql type_shape: no such type");
+      // A wrapper deeper than the fragment selects renders as "?", never a crash.
       const render = (ty: any): string =>
-        ty.kind === "NON_NULL" ? `${render(ty.ofType)}!` : ty.kind === "LIST" ? `[${render(ty.ofType)}]` : ty.name;
+        !ty ? "?" : ty.kind === "NON_NULL" ? `${render(ty.ofType)}!` : ty.kind === "LIST" ? `[${render(ty.ofType)}]` : ty.name;
       const fieldList = (fs: any[] | null) => fs?.map((f) => `${f.name}: ${render(f.type)}`);
       return stripNulls({
         name: t.name,
