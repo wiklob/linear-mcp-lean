@@ -1221,6 +1221,8 @@ export interface SaveIssueArgs {
   labels?: string[];
   blockedBy?: string[];
   priority?: number;
+  /** ISO calendar date `YYYY-MM-DD`; `null` clears it. */
+  dueDate?: string | null;
 }
 
 /** The closed minimal ack `save_issue` returns — and nothing else. */
@@ -1235,6 +1237,16 @@ interface RawIssueAck {
   identifier: string;
   url: string;
   state: { name: string } | null;
+}
+
+/** `dueDate` is a Linear TimelessDate: `YYYY-MM-DD` and a real calendar day.
+ *  Checked before any request so a bad date never half-applies a create. */
+function validDueDate(d: string | null): string | null {
+  if (d === null) return null;
+  const t = /^\d{4}-\d{2}-\d{2}$/.test(d) ? Date.parse(`${d}T00:00:00Z`) : NaN;
+  const real = !Number.isNaN(t) && new Date(t).toISOString().startsWith(d);
+  if (!real) throw new Error(`save_issue: dueDate "${d}" is not an ISO date (YYYY-MM-DD); pass null to clear it`);
+  return d;
 }
 
 /** Resolve `milestone` (name or id) to a projectMilestone id. A name needs a
@@ -1267,6 +1279,7 @@ export async function saveIssue(args: SaveIssueArgs): Promise<IssueAck> {
   if (args.title !== undefined) input.title = args.title;
   if (args.description !== undefined) input.description = args.description;
   if (args.priority !== undefined) input.priority = args.priority;
+  if (args.dueDate !== undefined) input.dueDate = validDueDate(args.dueDate);
 
   // Create requires title + team; resolve the team up front so a state
   // NAME can be scoped to it. On update the team comes from the existing issue

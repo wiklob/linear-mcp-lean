@@ -176,7 +176,7 @@ export function buildServer(): McpServer {
     {
       title: "Save issue",
       description:
-        "Create (no `id`) or update (`id`) an issue. Returns only {id, identifier, state, url} — no full-object echo. id-or-name args (state/assignee/project/milestone/labels) resolve server-side; `blockedBy` takes issue identifiers; create requires `title` + `team`.",
+        "Create (no `id`) or update (`id`) an issue. Returns only {id, identifier, state, url} — no full-object echo. id-or-name args (state/assignee/project/milestone/labels) resolve server-side; `blockedBy` takes issue identifiers; `dueDate` is ISO YYYY-MM-DD (null clears); create requires `title` + `team`.",
       inputSchema: {
         id: z.string().optional().describe("Issue id or identifier to UPDATE; omit to create"),
         title: z.string().optional().describe("Issue title (required on create)"),
@@ -189,6 +189,7 @@ export function buildServer(): McpServer {
         labels: z.array(z.string()).optional().describe("Label names or ids"),
         blockedBy: z.array(z.string()).optional().describe("Issue identifiers/ids that block this issue"),
         priority: z.number().int().min(0).max(4).optional().describe("0=None,1=Urgent,2=High,3=Medium,4=Low"),
+        dueDate: z.string().nullable().optional().describe("Due date, ISO YYYY-MM-DD; null clears it"),
       },
     },
     async (args) => jsonContent(await saveIssue(args)),
