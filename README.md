@@ -175,7 +175,7 @@ Reads are **lean by default, broaden on demand**. The full per-tool field map li
   ```
   To page: pass the returned `cursor` back as the `cursor` arg until `hasNextPage` is false. `list_issues` is the only paginated tool (see `FIELDS.md` for why the other lists stay bare arrays).
 
-- **`linear_graphql`** — the last resort, after the typed tools. Prefer a sanctioned named op (`issue_subscribers`, `issue_children`, `issue_history`, `type_shape` — see [`FIELDS.md`](./FIELDS.md#linear_graphql-escape-hatch)); the server runs its canonical minimal query and returns a trimmed shape. A raw `query` runs against `https://api.linear.app/graphql` with a null-stripped result; a mutation is rejected unless the call passes `allowMutation: true` and the service sets `LINEAR_GRAPHQL_ALLOW_MUTATION=1`. Bearer-gated like every tool; errors surface, never swallowed.
+- **`linear_graphql`** — the last resort: `FIELDS.md` maps the common "want X" to the typed tool that already does it. Then a sanctioned named op (`project_comments`, `project_documents`, `issue_subscribers`, `issue_children`, `issue_history`, `type_shape` — see [`FIELDS.md`](./FIELDS.md#linear_graphql-escape-hatch)); the server runs its canonical minimal query and returns a trimmed shape. A raw `query` runs against `https://api.linear.app/graphql` with a null-stripped result; a mutation is rejected unless the call passes `allowMutation: true` and the service sets `LINEAR_GRAPHQL_ALLOW_MUTATION=1`. Bearer-gated like every tool; errors surface, never swallowed.
   ```jsonc
   // named op → ["Ana", "Bo"]
   { "name": "linear_graphql", "arguments": { "op": "issue_subscribers", "variables": { "id": "ENG-123" } } }

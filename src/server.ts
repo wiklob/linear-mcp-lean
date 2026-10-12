@@ -177,7 +177,7 @@ export function buildServer(): McpServer {
     {
       title: "Save issue",
       description:
-        "Create (no `id`) or update (`id`) an issue. Returns only {id, identifier, state, url} — no full-object echo. id-or-name args (state/assignee/project/milestone/labels) resolve server-side; `blockedBy` takes issue identifiers; create requires `title` + `team`.",
+        "Create (no `id`) or update (`id`) an issue. Returns only {id, identifier, state, url} — no full-object echo. id-or-name args (state/assignee/project/milestone/labels) resolve server-side; `blockedBy` takes issue identifiers; `dueDate` is ISO YYYY-MM-DD (null clears); create requires `title` + `team`.",
       inputSchema: {
         id: z.string().optional().describe("Issue id or identifier to UPDATE; omit to create"),
         title: z.string().optional().describe("Issue title (required on create)"),
@@ -190,6 +190,7 @@ export function buildServer(): McpServer {
         labels: z.array(z.string()).optional().describe("Label names or ids"),
         blockedBy: z.array(z.string()).optional().describe("Issue identifiers/ids that block this issue"),
         priority: z.number().int().min(0).max(4).optional().describe("0=None,1=Urgent,2=High,3=Medium,4=Low"),
+        dueDate: z.string().nullable().optional().describe("Due date, ISO YYYY-MM-DD; null clears it"),
       },
     },
     async (args) => jsonContent(await saveIssue(args)),
@@ -724,7 +725,7 @@ export function buildServer(): McpServer {
     {
       title: "Linear GraphQL (escape hatch)",
       description:
-        "LAST RESORT — use the typed tool if one exists (project status/description → save_project; workflow-state ids → list_issue_statuses; comments/updates/docs → list_comments/get_status_updates/list_documents; relations → create_issue_relation/list_issue_relations; milestone members → list_issues({milestone}); text search → list_issues({query})). " +
+        "LAST RESORT — use the typed tool when one exists: project status/description/labels → list_projects / get_project / save_project; workflow-state ids → list_issue_statuses (or just pass the state name to save_issue/list_issues); project status updates → get_status_updates; issue comments → list_comments; documents → list_documents / get_document; milestone's issues → list_issues({milestone}); text search → list_issues({query}); relations → create_issue_relation / list_issue_relations (FIELDS.md has the full map). " +
         "Next, a sanctioned named op: pass `op` + `variables` and no query — the server runs a canonical minimal query and returns a trimmed shape. Ops: " +
         Object.values(NAMED_OPS).map((o) => o.summary).join("; ") +
         ". Only for a genuine one-off, pass `query` (raw GraphQL against https://api.linear.app/graphql); the result comes back null-stripped. Mutations are rejected unless `allowMutation: true` (and the service enables raw mutations). Errors surface, never swallowed.",

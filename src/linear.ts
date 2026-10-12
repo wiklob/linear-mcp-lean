@@ -112,11 +112,41 @@ function issueOf(op: string, d: { issue: any }): any {
   return d.issue;
 }
 
+/** The project off a named op's response; a null project is a loud not-found. */
+function projectOf(op: string, d: { project: any }): any {
+  if (!d.project) throw new Error(`linear_graphql ${op}: project not found`);
+  return d.project;
+}
+
 // The sanctioned long-tail reads: genuine gaps too rare for a typed tool
 // (research §3 — "documented snippet" tier), held here as canonical minimal
 // queries instead of a doc the caller copies from. A recurring read graduates to
 // a typed tool; a new entry here is a read only (mutations have typed verbs).
 export const NAMED_OPS: Record<string, NamedOp> = {
+  project_comments: {
+    summary: "project_comments {id} → [{id, body, createdAt, user}] — a project's comments (list_comments is issue-only)",
+    required: ["id"],
+    query: `query ProjectComments($id: String!) { project(id: $id) { comments { nodes { id body createdAt user { name } } } } }`,
+    shape: (d) =>
+      projectOf("project_comments", d).comments.nodes.map(
+        (c: { id: string; body: string; createdAt: string; user: Named }) =>
+          stripNulls({ id: c.id, body: c.body, createdAt: c.createdAt, user: nameOf(c.user) }),
+      ),
+  },
+  project_documents: {
+    summary: "project_documents {id} → [{id, title, slugId, updatedAt}] — a project's documents (list_documents has no project filter)",
+    required: ["id"],
+    query: `query ProjectDocuments($id: String!) { project(id: $id) { documents { nodes { id title slugId updatedAt } } } }`,
+    shape: (d) =>
+      projectOf("project_documents", d).documents.nodes.map(
+        (doc: { id: string; title: string; slugId: string; updatedAt: string }) => ({
+          id: doc.id,
+          title: doc.title,
+          slugId: doc.slugId,
+          updatedAt: doc.updatedAt,
+        }),
+      ),
+  },
   issue_subscribers: {
     summary: "issue_subscribers {id} → [name] — who is subscribed to an issue",
     required: ["id"],
@@ -1357,6 +1387,8 @@ export interface SaveIssueArgs {
   labels?: string[];
   blockedBy?: string[];
   priority?: number;
+  /** ISO calendar date `YYYY-MM-DD`; `null` clears it. */
+  dueDate?: string | null;
 }
 
 /** The closed minimal ack `save_issue` returns — and nothing else. */
@@ -1371,6 +1403,16 @@ interface RawIssueAck {
   identifier: string;
   url: string;
   state: { name: string } | null;
+}
+
+/** `dueDate` is a Linear TimelessDate: `YYYY-MM-DD` and a real calendar day.
+ *  Checked before any request so a bad date never half-applies a create. */
+function validDueDate(d: string | null): string | null {
+  if (d === null) return null;
+  const t = /^\d{4}-\d{2}-\d{2}$/.test(d) ? Date.parse(`${d}T00:00:00Z`) : NaN;
+  const real = !Number.isNaN(t) && new Date(t).toISOString().startsWith(d);
+  if (!real) throw new Error(`save_issue: dueDate "${d}" is not an ISO date (YYYY-MM-DD); pass null to clear it`);
+  return d;
 }
 
 /** Resolve `milestone` (name or id) to a projectMilestone id. A name needs a
@@ -1403,6 +1445,7 @@ export async function saveIssue(args: SaveIssueArgs): Promise<IssueAck> {
   if (args.title !== undefined) input.title = args.title;
   if (args.description !== undefined) input.description = args.description;
   if (args.priority !== undefined) input.priority = args.priority;
+  if (args.dueDate !== undefined) input.dueDate = validDueDate(args.dueDate);
 
   // Create requires title + team; resolve the team up front so a state
   // NAME can be scoped to it. On update the team comes from the existing issue

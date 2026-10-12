@@ -64,6 +64,10 @@ Every tool that deletes something follows this, and so does any future one:
 
 The guard lives in `requireConfirm` in `src/linear.ts`; a new destructive tool calls it after its read-back.
 
+## Issue due date (`save_issue`)
+
+`dueDate` takes an ISO calendar date (`YYYY-MM-DD`) and sets the issue's due date; `null` clears it. Anything else — a timestamp, `2026-02-30` — fails before any request, so a create never half-applies. `get_issue({full: true})` reads it back as `dueDate`.
+
 ## Project labels and body (`save_project`)
 
 `labels` takes project-label names or ids (the `list_project_labels` set — project labels are a different entity from issue labels) and **replaces** the project's label set; `[]` clears it. An unknown name fails before the write and the error names the labels that exist; a label group is rejected. `content` is the project's long markdown body (its overview page), distinct from the short `description` summary.
@@ -94,24 +98,51 @@ Everything else works on any plan: create, update/rename, status, owner, target 
 
 ## `linear_graphql` escape hatch
 
-The last resort, in this order:
+The last resort, in this order: a typed tool, then a sanctioned named op, then a raw query. Bearer-gated like every tool (the `/mcp` endpoint gate); errors surface, never swallowed.
 
-1. **Typed tool first.** Most raw-GraphQL fallbacks seen in real use already had a typed home: project status/description → `save_project`; workflow-state ids → `list_issue_statuses`; project comments/updates/docs → `list_comments` / `get_status_updates` / `list_documents`; relations → `create_issue_relation` / `list_issue_relations`; milestone members → `list_issues({milestone})`; text search → `list_issues({query})`.
-2. **A sanctioned named op** — `linear_graphql({op, variables})`, no query. The server holds the canonical minimal query and returns a trimmed closed shape, so the caller neither sends a document nor receives raw bytes:
+### Typed first — want X → use Y
 
-   | `op` | variables | returns |
-   |------|-----------|---------|
-   | `issue_subscribers` | `id` | `[name]` |
-   | `issue_children` | `id` | `[{identifier, title, state}]` |
-   | `issue_history` | `id` | `[{at, actor, fromState?, toState?, fromAssignee?, toAssignee?}]` — state/assignee changes, oldest first (last 100 history entries) |
-   | `type_shape` | `name` | `{name, kind, fields?, inputFields?, enumValues?}` — each field as `"name: Type"`, e.g. `labelIds: [String!]` |
+Most raw-GraphQL calls seen in real sessions were for things a typed tool already does, leaner. Check this map before reaching for `linear_graphql`:
 
-   An unknown op errors with the list; a missing variable errors before any request. A read that recurs graduates to a typed tool; this registry holds reads only.
-3. **Raw `query`** for a genuine one-off. The result is **null-stripped** (null object fields dropped at every depth; array slots kept) — Linear's raw payloads are dominated by null SLA/timestamp fields.
+| Want | Typed tool |
+|---|---|
+| Project status (read) | `list_projects` (lean rows carry `status{name,type}`) or `get_project({id, full: true})` |
+| Project status (change) | `save_project({id, status: "In Progress"})` — status by name, resolved server-side |
+| Project description / body (read) | `get_project({id})` → `description`; `full: true` adds `content` (the markdown body) |
+| Project description / body (write) | `save_project({id, description})` (≤255-char summary) / `save_project({id, content})` (body) |
+| Project id from its name | `list_projects` — no name filter, so narrow with `team`/`state`/`label` (default limit 50); `get_project` takes an id, not a name |
+| Project labels (change) | `save_project({id, labels: [...]})` — replaces the set |
+| Workflow-state id | Usually unneeded: `save_issue({state: "Done"})` and `list_issues({state})` take the name. When you do need ids/types: `list_issue_statuses({team})` → `[{id, name, type}]`; one id → `get_issue_status({id})` |
+| Project status updates (read / post) | `get_status_updates({type: "project", project})` / `save_status_update({type: "project", project, body, health})` |
+| Issue comments (read / post) | `list_comments({issue})` / `save_comment({issue, body})` |
+| Documents (read / write) | `list_documents` → `get_document({id})` (which carries `project{id}`); `save_document({title, content, project})` |
+| Milestone's issues / membership | `list_issues({milestone, project})` |
+| Find an issue by text | `list_issues({query})` — title OR description |
+| Issue relations (duplicate / related / blocks) | `create_issue_relation` / `list_issue_relations` / `delete_issue_relation` |
+| Delete a milestone | `delete_milestone({id, confirm: true})` |
+| Due date, assignee, timestamps, parent, estimate (read) | `get_issue({id, full: true})` |
+| Due date (write) | `save_issue({id, dueDate: "YYYY-MM-DD"})` — `null` clears |
 
-**Mutations** through the raw hatch are rejected unless the call passes **`allowMutation: true`** *and* the service sets `LINEAR_GRAPHQL_ALLOW_MUTATION=1` (V-36 — a leaked bearer can't mutate through the server's key by passing a flag). An unparseable document counts as a mutation. Every recurring write has a typed verb; the flag is for the one that doesn't.
+### Sanctioned named ops — `linear_graphql({op, variables})`
 
-Bearer-gated like every tool (the `/mcp` endpoint gate); errors surface, never swallowed.
+What's left for the escape hatch — reads with no typed path today — runs as a **named op**: pass `op` + `variables` and no query. The server holds the canonical minimal query and returns a trimmed closed shape, so the caller neither sends a document nor receives raw bytes.
+
+| `op` | variables | returns |
+|------|-----------|---------|
+| `project_comments` | `id` | `[{id, body, createdAt, user}]` — `list_comments` is issue-only |
+| `project_documents` | `id` | `[{id, title, slugId, updatedAt}]` — `list_documents` has no project filter |
+| `issue_subscribers` | `id` | `[name]` |
+| `issue_children` | `id` | `[{identifier, title, state}]` |
+| `issue_history` | `id` | `[{at, actor, fromState?, toState?, fromAssignee?, toAssignee?}]` — state/assignee changes, oldest first (from the latest 100 history entries) |
+| `type_shape` | `name` | `{name, kind, fields?, inputFields?, enumValues?}` — schema shape while debugging, each field as `"name: Type"`, e.g. `labelIds: [String!]` |
+
+An unknown op errors with the list; a missing variable errors before any request; an unknown issue or project is a loud not-found. If the same raw read keeps coming back, that's a missing named op, typed tool or filter — file it rather than repeating the query.
+
+### Raw `query` — genuine one-offs
+
+`linear_graphql({query, variables})` runs an arbitrary GraphQL document. The result is **null-stripped** (null object fields dropped at every depth; array slots kept) — Linear's raw payloads are dominated by null SLA/timestamp fields. Select only the fields you need.
+
+**Mutations** are rejected unless the call passes **`allowMutation: true`** *and* the service sets `LINEAR_GRAPHQL_ALLOW_MUTATION=1` (V-36 — a leaked bearer can't mutate through the server's key by passing a flag). An unparseable document counts as a mutation. Every recurring write has a typed tool; a write with no typed tool is a ticket for one, not a reason to set the flag.
 
 ## Byte budget (why lean-by-default is worth it)
 
