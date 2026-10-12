@@ -175,7 +175,7 @@ Reads are **lean by default, broaden on demand**. The full per-tool field map li
   ```
   To page: pass the returned `cursor` back as the `cursor` arg until `hasNextPage` is false. `list_issues` is the only paginated tool (see `FIELDS.md` for why the other lists stay bare arrays).
 
-- **`linear_graphql({query, variables})`** — arbitrary GraphQL against `https://api.linear.app/graphql` via the same server-side client, raw untrimmed result. Bearer-gated like every tool; errors surface, never swallowed.
+- **`linear_graphql({query, variables})`** — arbitrary GraphQL against `https://api.linear.app/graphql` via the same server-side client, raw untrimmed result. Bearer-gated like every tool; errors surface, never swallowed. Last resort: `FIELDS.md` maps the common "want X" to the typed tool that already does it, and lists the sanctioned raw reads.
   ```jsonc
   // request
   { "name": "linear_graphql", "arguments": {
