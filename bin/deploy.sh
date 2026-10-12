@@ -49,19 +49,30 @@ remote() { ssh "${SSH_OPTS[@]}" "$HOST" "$@"; }
 
 # deploy/'s unit and Caddyfile are shipped by hand (deploy/README.md), so land can't
 # deploy them — but it runs this on every merge touching them, and a box that differs
-# fails the land loudly instead of sitting silently stale. Comments, blank lines,
-# Documentation= and the Caddy site address (the repo has a placeholder) don't count.
+# fails the land loudly instead of sitting silently stale. The unit is read with
+# `systemctl cat` (so drop-ins count) and a pending daemon-reload is drift too.
+# Comments, blank lines, Documentation= and a bare-hostname Caddy site address (the
+# repo has a placeholder) don't count. Caddy's loaded config isn't checked: after
+# shipping the Caddyfile, `systemctl reload caddy` is on the operator.
 if [[ $CHECK_INFRA = 1 ]]; then
-  norm() { sed -e 's/[[:space:]]*#.*$//' -e '/^[[:space:]]*$/d' -e '/^Documentation=/d' -e 's/^[^[:space:]]* {$/<site> {/'; }
+  [[ $CHECK_ONLY = 0 ]] || { echo "deploy: --check and --check-infra are separate runs" >&2; exit 2; }
+  unit_norm() { sed -e '/^[[:space:]]*[#;]/d' -e '/^[[:space:]]*$/d' -e '/^Documentation=/d'; }
+  caddy_norm() { sed -E -e 's/(^|[[:space:]])#.*$//' -e '/^[[:space:]]*$/d' -e 's/^[A-Za-z0-9.-]+ \{$/<site> {/'; }
   drift=0
-  for pair in "linear-mcp.service:/etc/systemd/system/linear-mcp.service" "Caddyfile:/etc/caddy/Caddyfile"; do
-    local_file="deploy/${pair%%:*}" box_file="${pair#*:}"
-    box="$(remote "cat $box_file")" || { echo "deploy: cannot read $box_file on the box" >&2; exit 1; }
-    if ! diff <(printf '%s\n' "$box" | norm) <(norm < "$local_file") >&2; then
-      echo "deploy: $box_file on the box differs from $local_file (above: < box, > repo)" >&2
+  check() {  # <label> <normalizer> <repo file> <remote command>
+    local box
+    box="$(remote "$4")" || { echo "deploy: cannot read $1 on the box" >&2; exit 1; }
+    if ! diff <(printf '%s\n' "$box" | "$2") <("$2" < "$3") >&2; then
+      echo "deploy: $1 on the box differs from $3 (above: < box, > repo)" >&2
       drift=1
     fi
-  done
+  }
+  check "unit $SERVICE" unit_norm deploy/linear-mcp.service "systemctl cat $SERVICE"
+  check /etc/caddy/Caddyfile caddy_norm deploy/Caddyfile "cat /etc/caddy/Caddyfile"
+  if [[ "$(remote "systemctl show -p NeedDaemonReload --value $SERVICE")" != no ]]; then
+    echo "deploy: $SERVICE unit changed on disk but systemd hasn't reloaded it — daemon-reload + restart" >&2
+    drift=1
+  fi
   if [[ $drift = 1 ]]; then
     echo "deploy: ship deploy/ by hand per deploy/README.md (Install steps 6–7), then re-run this check" >&2
     exit 1
