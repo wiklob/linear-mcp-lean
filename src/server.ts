@@ -480,7 +480,7 @@ export function buildServer(): McpServer {
     "list_issue_statuses",
     {
       title: "List issue statuses",
-      description: "List workflow states → [{id, name, type, color}]. Optional `team` (name or id) scope.",
+      description: "List workflow states → [{id, name, type}]. Optional `team` (name or id) scope.",
       inputSchema: {
         team: z.string().optional().describe("Team name or id to scope to"),
         limit: z.number().int().positive().optional().describe("Max rows (default 50)"),
@@ -493,7 +493,7 @@ export function buildServer(): McpServer {
     "get_issue_status",
     {
       title: "Get issue status",
-      description: "Get one workflow state → {id, name, type, color}.",
+      description: "Get one workflow state → {id, name, type}.",
       inputSchema: { id: z.string().describe("Workflow state id") },
     },
     async ({ id }) => jsonContent(await getIssueStatus(id)),

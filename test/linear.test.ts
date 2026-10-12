@@ -1315,3 +1315,35 @@ describe("listGitAutomationStates / deleteGitAutomationState", () => {
     expect(recorded).toHaveLength(1);
   });
 });
+
+describe("listIssueStatuses / getIssueStatus (LEAN-1)", () => {
+  const RAW_STATES = {
+    workflowStates: {
+      nodes: [
+        { id: U_STATE, name: "Todo", type: "unstarted" },
+        { id: U_STATE2, name: "Done", type: "completed" },
+      ],
+    },
+  };
+
+  it("list: team-scoped, selects only id/name/type, closed rows with no color", async () => {
+    respond(teamsPayload, RAW_STATES);
+    const { listIssueStatuses } = await linear();
+    const rows = await listIssueStatuses({ team: "LEAN" });
+    expect(recorded[1].query).toMatch(/nodes \{ id name type \}/);
+    expect(recorded[1].query).not.toContain("color");
+    expect(recorded[1].variables).toEqual({ filter: { team: { id: { eq: U_TEAM } } }, first: 50 });
+    expect(rows).toEqual([
+      { id: U_STATE, name: "Todo", type: "unstarted" },
+      { id: U_STATE2, name: "Done", type: "completed" },
+    ]);
+  });
+
+  it("get: same closed shape, not found → loud throw", async () => {
+    respond({ workflowState: { id: U_STATE, name: "Todo", type: "unstarted" } }, { workflowState: null });
+    const { getIssueStatus } = await linear();
+    expect(await getIssueStatus(U_STATE)).toEqual({ id: U_STATE, name: "Todo", type: "unstarted" });
+    expect(recorded[0].query).not.toContain("color");
+    await expect(getIssueStatus(U_STATE2)).rejects.toThrow("workflow state not found");
+  });
+});
