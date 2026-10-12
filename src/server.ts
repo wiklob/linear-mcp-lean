@@ -43,6 +43,7 @@ import {
   getInitiative,
   saveInitiative,
   linearGraphql,
+  NAMED_OPS,
 } from "./linear.js";
 import { proxyToHostedMcp } from "./proxy.js";
 import { runInstrumented } from "./instrument.js";
@@ -714,22 +715,28 @@ export function buildServer(): McpServer {
   );
 
   // --- escape hatch ----------------------------------------------------------
-  // Arbitrary GraphQL against Linear via the same server-side client. The rare
-  // need neither the lean default nor `full` covers; raw (untrimmed) result.
-  // Bearer-gated like every tool (the /mcp endpoint gate); does NOT depend on
-  // the hosted proxy.
+  // Sanctioned named queries (`op`) or arbitrary GraphQL (`query`) via the same
+  // server-side client; every result null-stripped. A mutation needs
+  // `allowMutation: true` AND the service's V-36 env opt-in. Bearer-gated like
+  // every tool (the /mcp endpoint gate); does NOT depend on the hosted proxy.
   server.registerTool(
     "linear_graphql",
     {
       title: "Linear GraphQL (escape hatch)",
       description:
-        "Run an arbitrary GraphQL query or mutation against Linear's API (https://api.linear.app/graphql) and return the raw result. For the rare need neither the lean default nor full:true covers. Example: linear_graphql({query: \"query($id:String!){ issue(id:$id){ identifier subscribers{ nodes{ name } } } }\", variables: {id: \"ENG-123\"}}). Bearer-gated like every tool; errors surface, never swallowed.",
+        "LAST RESORT — use the typed tool if one exists (project status/description → save_project; workflow-state ids → list_issue_statuses; comments/updates/docs → list_comments/get_status_updates/list_documents; relations → create_issue_relation/list_issue_relations; milestone members → list_issues({milestone}); text search → list_issues({query})). " +
+        "Next, a sanctioned named op: pass `op` + `variables` and no query — the server runs a canonical minimal query and returns a trimmed shape. Ops: " +
+        Object.values(NAMED_OPS).map((o) => o.summary).join("; ") +
+        ". Only for a genuine one-off, pass `query` (raw GraphQL against https://api.linear.app/graphql); the result comes back null-stripped. Mutations are rejected unless `allowMutation: true` (and the service enables raw mutations). Errors surface, never swallowed.",
       inputSchema: {
-        query: z.string().describe("A GraphQL document (query or mutation)"),
-        variables: z.record(z.unknown()).optional().describe("Variables object for the document"),
+        op: z.string().optional().describe(`Sanctioned named op: ${Object.keys(NAMED_OPS).join(", ")}`),
+        query: z.string().optional().describe("A raw GraphQL document — only when no typed tool or named op covers it"),
+        variables: z.record(z.unknown()).optional().describe("Variables for the op or the document"),
+        allowMutation: z.boolean().optional().describe("Must be true to run a mutation through the raw hatch"),
       },
     },
-    async ({ query, variables }) => jsonContent(await linearGraphql({ query, variables })),
+    async ({ op, query, variables, allowMutation }) =>
+      jsonContent(await linearGraphql({ op, query, variables, allowMutation })),
   );
 
   return server;

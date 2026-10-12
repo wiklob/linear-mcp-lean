@@ -41,17 +41,20 @@ function gqlClient(): GraphQLClient {
 }
 
 // --- linear_graphql escape hatch -----------------------------------------------
-// Run an arbitrary GraphQL document against Linear via the same server-side
-// client every tool uses. The rare-need tier neither the lean default nor
-// `full` covers (a field/connection no tool selects, a one-off mutation). The
-// raw result is returned UNTRIMMED by design — it is the escape hatch. Errors
-// surface (graphql-request throws on a GraphQL/transport error → the MCP tool
-// error), never swallowed. Bearer-gating is inherited from the
-// `/mcp` endpoint, like every tool — no separate gate.
+// Two modes, one tool. `op` + variables runs a NAMED query from the sanctioned
+// registry below — the node holds the canonical minimal selection and returns a
+// pre-trimmed shape, so the caller neither sends a query nor gets raw bytes back.
+// `query` runs an arbitrary GraphQL document for a genuine one-off. Either way
+// the result is null-stripped before it leaves (Linear's raw payloads are
+// dominated by null SLA/timestamp fields). Errors surface (graphql-request
+// throws on a GraphQL/transport error → the MCP tool error), never swallowed.
+// Bearer-gating is inherited from the `/mcp` endpoint, like every tool.
 
 export interface LinearGraphqlArgs {
-  query: string;
+  query?: string;
+  op?: string;
   variables?: Record<string, unknown>;
+  allowMutation?: boolean;
 }
 
 /** True when the GraphQL document defines a mutation (or subscription) operation.
@@ -59,7 +62,7 @@ export interface LinearGraphqlArgs {
  *  commas/whitespace as insignificant, so a leading-comma dodge (`,mutation {…}`)
  *  parses as a valid mutation but slips a regex anchored to `^`/`}`. Fails CLOSED:
  *  an unparseable document is treated as a mutation, so it requires the explicit
- *  opt-in below rather than being forwarded. */
+ *  opt-ins below rather than being forwarded. */
 function isMutation(query: string): boolean {
   try {
     return parse(query).definitions.some(
@@ -68,23 +71,146 @@ function isMutation(query: string): boolean {
         (d.operation === "mutation" || d.operation === "subscription"),
     );
   } catch {
-    return true; // unparseable → fail closed (require LINEAR_GRAPHQL_ALLOW_MUTATION)
+    return true; // unparseable → fail closed
   }
 }
 
-/** Execute an arbitrary GraphQL query/mutation and return Linear's raw result. */
-export async function linearGraphql(args: LinearGraphqlArgs): Promise<unknown> {
-  // V-36 (§1 med): the escape hatch runs arbitrary GraphQL with the server's PAK, so
-  // a leaked bearer could delete issues / rotate API keys via a raw mutation — wider
-  // than the curated tool surface. Gate mutations read-only-by-default; a mutation
-  // needs an explicit opt-in env flag. Reads are unaffected.
-  if (isMutation(args.query) && process.env.LINEAR_GRAPHQL_ALLOW_MUTATION !== "1") {
+/** Recursively drop null/undefined object values (array slots stay positional).
+ *  Lever 1 of the escape-hatch trim: the same null-stripping every typed tool's
+ *  flattener does, applied to a raw result whose shape we don't know. */
+export function stripNulls(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stripNulls);
+  if (value !== null && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value)) {
+      if (v === null || v === undefined) continue;
+      out[k] = stripNulls(v);
+    }
+    return out;
+  }
+  return value;
+}
+
+interface NamedOp {
+  /** One line for the tool description + the unknown-op error. */
+  summary: string;
+  /** Variables the op needs; a missing one errors before any request. */
+  required: string[];
+  query: string;
+  /** Flatten Linear's response into the op's closed lean shape. */
+  shape: (data: any) => unknown;
+}
+
+type Named = { name: string } | null | undefined;
+const nameOf = (n: Named) => n?.name;
+
+// The sanctioned long-tail reads: genuine gaps too rare for a typed tool
+// (research §3 — "documented snippet" tier), held here as canonical minimal
+// queries instead of a doc the caller copies from. A recurring read graduates to
+// a typed tool; a new entry here is a read only (mutations have typed verbs).
+export const NAMED_OPS: Record<string, NamedOp> = {
+  issue_subscribers: {
+    summary: "issue_subscribers {id} → [name] — who is subscribed to an issue",
+    required: ["id"],
+    query: `query IssueSubscribers($id: String!) { issue(id: $id) { subscribers { nodes { name } } } }`,
+    shape: (d) => d.issue.subscribers.nodes.map((u: { name: string }) => u.name),
+  },
+  issue_children: {
+    summary: "issue_children {id} → [{identifier, title, state}] — an issue's sub-issues",
+    required: ["id"],
+    query: `query IssueChildren($id: String!) { issue(id: $id) { children { nodes { identifier title state { name } } } } }`,
+    shape: (d) =>
+      d.issue.children.nodes.map((c: { identifier: string; title: string; state: Named }) => ({
+        identifier: c.identifier,
+        title: c.title,
+        state: nameOf(c.state),
+      })),
+  },
+  issue_history: {
+    summary:
+      "issue_history {id} → [{at, actor, fromState, toState, fromAssignee, toAssignee}] — an issue's state/assignee changes, oldest first",
+    required: ["id"],
+    query: `query IssueHistory($id: String!) { issue(id: $id) { history(first: 100) { nodes { createdAt actor { name } fromState { name } toState { name } fromAssignee { name } toAssignee { name } } } } }`,
+    shape: (d) =>
+      d.issue.history.nodes
+        .filter((h: any) => h.toState || h.toAssignee || h.fromAssignee)
+        .map((h: any) =>
+          stripNulls({
+            at: h.createdAt,
+            actor: nameOf(h.actor),
+            fromState: nameOf(h.fromState),
+            toState: nameOf(h.toState),
+            fromAssignee: nameOf(h.fromAssignee),
+            toAssignee: nameOf(h.toAssignee),
+          }),
+        )
+        .reverse(),
+  },
+  type_shape: {
+    summary:
+      "type_shape {name} → {name, kind, fields?, inputFields?, enumValues?} — a GraphQL type's arg/field shape (e.g. IssueUpdateInput), each field as \"name: Type\"",
+    required: ["name"],
+    query: `query TypeShape($name: String!) { __type(name: $name) { name kind fields { name type { ...T } } inputFields { name type { ...T } } enumValues { name } } }
+fragment T on __Type { kind name ofType { kind name ofType { kind name ofType { kind name } } } }`,
+    shape: (d) => {
+      const t = d.__type;
+      if (!t) throw new Error("linear_graphql type_shape: no such type");
+      const render = (ty: any): string =>
+        ty.kind === "NON_NULL" ? `${render(ty.ofType)}!` : ty.kind === "LIST" ? `[${render(ty.ofType)}]` : ty.name;
+      const fieldList = (fs: any[] | null) => fs?.map((f) => `${f.name}: ${render(f.type)}`);
+      return stripNulls({
+        name: t.name,
+        kind: t.kind,
+        fields: fieldList(t.fields),
+        inputFields: fieldList(t.inputFields),
+        enumValues: t.enumValues?.map((e: { name: string }) => e.name),
+      });
+    },
+  },
+};
+
+async function runNamedOp(op: string, variables: Record<string, unknown>): Promise<unknown> {
+  const named = Object.hasOwn(NAMED_OPS, op) ? NAMED_OPS[op] : undefined;
+  if (!named) {
     throw new Error(
-      "linear_graphql: mutations are disabled by default (V-36 security hardening). " +
-      "Set LINEAR_GRAPHQL_ALLOW_MUTATION=1 on the service to enable raw mutations.",
+      `linear_graphql: unknown op "${op}". Sanctioned ops: ` +
+        Object.values(NAMED_OPS).map((o) => o.summary).join("; "),
     );
   }
-  return gqlClient().request(args.query, args.variables ?? {});
+  const missing = named.required.filter((v) => variables[v] === undefined);
+  if (missing.length) throw new Error(`linear_graphql op "${op}": missing variables ${missing.join(", ")}`);
+  return named.shape(await gqlClient().request(named.query, variables));
+}
+
+/** Run a named op or an arbitrary query/mutation; the result is null-stripped. */
+export async function linearGraphql(args: LinearGraphqlArgs): Promise<unknown> {
+  const variables = args.variables ?? {};
+  if ((args.op === undefined) === (args.query === undefined)) {
+    throw new Error("linear_graphql: pass exactly one of `op` (a sanctioned named query) or `query` (raw GraphQL)");
+  }
+  if (args.op !== undefined) return runNamedOp(args.op, variables);
+  const query = args.query as string;
+  if (isMutation(query)) {
+    // Per-call layer (V-238 §4): the hatch is allowlisted, so a mutation must be
+    // a deliberate act, not a reflex when a typed verb exists.
+    if (args.allowMutation !== true) {
+      throw new Error(
+        "linear_graphql: mutations are rejected unless `allowMutation: true` is passed. " +
+          "Use the typed tool if one exists (save_issue, save_project, save_milestone, create_issue_relation, …); " +
+          "pass allowMutation only for a write no typed tool covers.",
+      );
+    }
+    // Deployment layer (V-36): the hatch runs with the server's PAK, so a leaked
+    // bearer could otherwise mutate anything — raw mutations stay off unless the
+    // service opts in, whatever the caller passes.
+    if (process.env.LINEAR_GRAPHQL_ALLOW_MUTATION !== "1") {
+      throw new Error(
+        "linear_graphql: mutations are disabled by default (V-36 security hardening). " +
+          "Set LINEAR_GRAPHQL_ALLOW_MUTATION=1 on the service to enable raw mutations.",
+      );
+    }
+  }
+  return stripNulls(await gqlClient().request(query, variables));
 }
 
 // --- viewer resolution ----------------------------------------------------------
