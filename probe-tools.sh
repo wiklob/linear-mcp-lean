@@ -66,6 +66,7 @@ list_cycles
 list_diffs
 list_documents
 list_git_automation_states
+list_initiatives
 list_issue_labels
 list_issue_statuses
 list_issue_relations
