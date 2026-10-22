@@ -20,6 +20,7 @@ import {
   // long-tail GraphQL tools
   getTeam,
   listTeams,
+  saveTeam,
   getUser,
   listUsers,
   getAttachment,
@@ -338,6 +339,22 @@ export function buildServer(): McpServer {
       },
     },
     async (args) => jsonContent(await listTeams(args)),
+  );
+
+  server.registerTool(
+    "save_team",
+    {
+      title: "Save team",
+      description:
+        "Create (no `id`) or update (`id`) a team → {id, name, key}. Create requires `name` (`key` optional — Linear derives one); update renames, re-keys, or redescribes the team `id` names (id, key, or name). No delete/archive.",
+      inputSchema: {
+        id: z.string().optional().describe("Team id, key, or name to UPDATE; omit to create"),
+        name: z.string().optional().describe("Team name (required on create)"),
+        key: z.string().optional().describe("Team key, e.g. ENG — prefixes issue identifiers"),
+        description: z.string().optional().describe("Team description"),
+      },
+    },
+    async (args) => jsonContent(await saveTeam(args)),
   );
 
   server.registerTool(

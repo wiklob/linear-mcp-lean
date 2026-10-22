@@ -83,6 +83,7 @@ save_initiative
 save_issue
 save_milestone
 save_project
+save_team
 save_status_update
 search_documentation
 EOF
