@@ -2257,15 +2257,30 @@ export interface SaveTeamArgs {
 /** Create (no `id`) or update (`id` = team id, key, or name) a team, returning
  *  only `{id, name, key}`. Create requires `name`; Linear derives `key` when
  *  omitted. An update with nothing to change fails before any write. */
+/** The one team a rename targets. Unlike getTeam's first-match, a value that is
+ *  one team's key and another's name fails loud instead of renaming either. */
+async function resolveRenameTarget(v: string): Promise<string> {
+  if (isId(v)) return v;
+  const data = await gqlClient().request<{ teams: { nodes: FlatTeam[] } }>(TEAMS_QUERY, { first: 250 });
+  const q = decodeHtmlEntities(v).toLowerCase();
+  const hits = data.teams.nodes.filter((x) => x.key.toLowerCase() === q || x.name.toLowerCase() === q);
+  if (hits.length > 1) {
+    throw new Error(`ambiguous team: "${v}" matches ${hits.map((x) => `"${x.name}" (${x.key})`).join(" and ")} — pass the id`);
+  }
+  if (!hits.length) throw new Error(`team not found: "${v}" (by id, key, or name)`);
+  return hits[0].id;
+}
+
 export async function saveTeam(args: SaveTeamArgs): Promise<FlatTeam> {
   const input: Record<string, unknown> = {};
   if (args.name !== undefined) input.name = args.name;
   if (args.key !== undefined) input.key = args.key;
   if (args.description !== undefined) input.description = args.description;
   let t: FlatTeam;
-  if (args.id) {
+  if (args.id !== undefined) {
+    if (!args.id) throw new Error("save_team `id` is empty — omit it to create");
     if (!Object.keys(input).length) throw new Error("save_team update needs `name`, `key`, or `description`");
-    const id = await resolveOneId(resolveTeamIds, "team", args.id);
+    const id = await resolveRenameTarget(args.id);
     const data = await gqlClient().request<{ teamUpdate: { team: FlatTeam } }>(TEAM_UPDATE, { id, input });
     t = data.teamUpdate.team;
   } else {

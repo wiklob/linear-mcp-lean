@@ -997,6 +997,16 @@ describe("saveTeam", () => {
     await expect(saveTeam({ key: "X" })).rejects.toThrow("create requires `name`");
     await expect(saveTeam({ id: "lean" })).rejects.toThrow("update needs");
     await expect(saveTeam({ id: "nope", name: "x" })).rejects.toThrow('team not found: "nope"');
+    await expect(saveTeam({ id: "", name: "x" })).rejects.toThrow("`id` is empty");
+    respond({
+      teams: {
+        nodes: [
+          { id: U_TEAM, name: "Lean Wrapper", key: "OPS" },
+          { id: U_PROJECT, name: "Ops", key: "OP" },
+        ],
+      },
+    });
+    await expect(saveTeam({ id: "ops", name: "x" })).rejects.toThrow('ambiguous team: "ops"');
     expect(recorded.filter((r) => r.query.includes("mutation"))).toEqual([]);
   });
 });
