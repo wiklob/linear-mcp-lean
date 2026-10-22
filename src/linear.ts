@@ -2228,6 +2228,54 @@ export async function getTeam(query: string): Promise<FlatTeam> {
   return { id: t.id, name: t.name, key: t.key };
 }
 
+// --- save_team ----------------------------------------------------------------
+// Typed team create / rename / re-key, so renaming a team never needs a raw
+// mutation through linear_graphql. No delete or archive by design.
+
+const TEAM_CREATE = gql`
+  mutation TeamCreate($input: TeamCreateInput!) {
+    teamCreate(input: $input) {
+      team { id name key }
+    }
+  }
+`;
+const TEAM_UPDATE = gql`
+  mutation TeamUpdate($id: String!, $input: TeamUpdateInput!) {
+    teamUpdate(id: $id, input: $input) {
+      team { id name key }
+    }
+  }
+`;
+
+export interface SaveTeamArgs {
+  id?: string;
+  name?: string;
+  key?: string;
+  description?: string;
+}
+
+/** Create (no `id`) or update (`id` = team id, key, or name) a team, returning
+ *  only `{id, name, key}`. Create requires `name`; Linear derives `key` when
+ *  omitted. An update with nothing to change fails before any write. */
+export async function saveTeam(args: SaveTeamArgs): Promise<FlatTeam> {
+  const input: Record<string, unknown> = {};
+  if (args.name !== undefined) input.name = args.name;
+  if (args.key !== undefined) input.key = args.key;
+  if (args.description !== undefined) input.description = args.description;
+  let t: FlatTeam;
+  if (args.id) {
+    if (!Object.keys(input).length) throw new Error("save_team update needs `name`, `key`, or `description`");
+    const id = await resolveOneId(resolveTeamIds, "team", args.id);
+    const data = await gqlClient().request<{ teamUpdate: { team: FlatTeam } }>(TEAM_UPDATE, { id, input });
+    t = data.teamUpdate.team;
+  } else {
+    if (!args.name) throw new Error("save_team create requires `name`");
+    const data = await gqlClient().request<{ teamCreate: { team: FlatTeam } }>(TEAM_CREATE, { input });
+    t = data.teamCreate.team;
+  }
+  return { id: t.id, name: t.name, key: t.key };
+}
+
 // --- users: get_user / list_users --------------------------------------------
 
 const USERS_QUERY = gql`

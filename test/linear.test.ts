@@ -965,6 +965,42 @@ describe("getTeam / listTeams", () => {
   });
 });
 
+describe("saveTeam", () => {
+  it("create sends name + key + description in one teamCreate → closed ack", async () => {
+    respond({ teamCreate: { team: { id: U_TEAM, name: "Answers", key: "ANS", color: "#fff" } } });
+    const { saveTeam } = await linear();
+    expect(await saveTeam({ name: "Answers", key: "ANS", description: "d" })).toEqual({
+      id: U_TEAM,
+      name: "Answers",
+      key: "ANS",
+    });
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0].query).toContain("teamCreate");
+    expect(recorded[0].variables).toEqual({ input: { name: "Answers", key: "ANS", description: "d" } });
+  });
+
+  it("update resolves the team by key, then renames and re-keys it by id", async () => {
+    respond(teamsPayload, { teamUpdate: { team: { id: U_TEAM, name: "Reprint", key: "RP" } } });
+    const { saveTeam } = await linear();
+    expect(await saveTeam({ id: "lean", name: "Reprint", key: "RP" })).toEqual({
+      id: U_TEAM,
+      name: "Reprint",
+      key: "RP",
+    });
+    expect(recorded[1].query).toContain("teamUpdate");
+    expect(recorded[1].variables).toEqual({ id: U_TEAM, input: { name: "Reprint", key: "RP" } });
+  });
+
+  it("misuse fails loudly with nothing written", async () => {
+    respond(teamsPayload);
+    const { saveTeam } = await linear();
+    await expect(saveTeam({ key: "X" })).rejects.toThrow("create requires `name`");
+    await expect(saveTeam({ id: "lean" })).rejects.toThrow("update needs");
+    await expect(saveTeam({ id: "nope", name: "x" })).rejects.toThrow('team not found: "nope"');
+    expect(recorded.filter((r) => r.query.includes("mutation"))).toEqual([]);
+  });
+});
+
 describe("getUser", () => {
   it('"me" resolves via the viewer query', async () => {
     respond(
